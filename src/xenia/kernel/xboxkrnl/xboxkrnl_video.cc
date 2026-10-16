@@ -221,17 +221,24 @@ void VdGetCurrentDisplayInformation_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(VdGetCurrentDisplayInformation, kVideo, kStub);
 
-void VdQueryVideoMode(X_VIDEO_MODE* video_mode,
-                      [[maybe_unused]] bool is_internal_resolution) {
+void VdQueryVideoMode(X_VIDEO_MODE* video_mode, bool is_internal_resolution) {
   // TODO(benvanik): get info from actual display.
   std::memset(video_mode, 0, sizeof(X_VIDEO_MODE));
 
   // Later calculate if resolution is widescreen or not and apply flag
   // accordingly. Technically possible resolutions should depend on av_pack, but
   // we can ignore it.
-  const auto resolution =
+  const auto stored_resolution =
       Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
           XCONFIG_USER_CATEGORY, XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+  // The dashboard's display settings query the "real" mode to mark the
+  // current choice, so it sees 2K/4K as stored; everything else gets the
+  // 720p mode those choices are rendered with.
+  const bool dashboard_real_query =
+      is_internal_resolution && kernel_state()->title_id() == 0xFFFE07D1;
+  const auto resolution = dashboard_real_query
+                              ? stored_resolution
+                              : GuestOutputResolution(stored_resolution);
 
   const auto is_widescreen = IsWidescreen(kernel_state(), resolution);
 
@@ -631,6 +638,61 @@ struct X_VD_ENUM_VIDEO_MODE {
 };
 static_assert_size(X_VD_ENUM_VIDEO_MODE, 0x18);
 
+// The 17559 dashboard only lists modes found in its resolution table at
+// 0x920201C0 ({u16 width, u16 height, u16, u16 flags} x 10). Two rarely used
+// VGA entries (1280x768, 1360x768) are replaced in guest memory with 2560x1440
+// and 3840x2160 so they can be picked from the HDTV settings. The original
+// bytes are checked first, so other dashboard versions are left untouched.
+static bool PatchDashboardResolutionTable() {
+  constexpr uint32_t kTable = 0x920201C0;
+  struct Entry {
+    uint32_t offset;
+    uint16_t old_width, old_height, new_width, new_height;
+  };
+  constexpr Entry kEntries[] = {{4 * 8, 1280, 768, 2560, 1440},
+                                {6 * 8, 1360, 768, 3840, 2160}};
+  if (kernel_state()->title_id() != 0xFFFE07D1) {
+    return false;
+  }
+  auto memory = kernel_state()->memory();
+  auto heap = memory->LookupHeap(kTable);
+  uint32_t protect = 0;
+  if (!heap || !heap->QueryProtect(kTable, &protect) ||
+      !(protect & kMemoryProtectRead)) {
+    return false;
+  }
+  auto table = memory->TranslateVirtual<uint8_t*>(kTable);
+  bool already_patched = true;
+  for (const auto& e : kEntries) {
+    uint16_t w = xe::load_and_swap<uint16_t>(table + e.offset);
+    uint16_t h = xe::load_and_swap<uint16_t>(table + e.offset + 2);
+    if (w == e.new_width && h == e.new_height) {
+      continue;
+    }
+    already_patched = false;
+    if (w != e.old_width || h != e.old_height) {
+      return false;
+    }
+  }
+  if (already_patched) {
+    return true;
+  }
+  const uint32_t page = kTable & ~0xFFFu;
+  const bool writable = (protect & kMemoryProtectWrite) != 0;
+  if (!writable) {
+    heap->Protect(page, 0x1000, kMemoryProtectRead | kMemoryProtectWrite);
+  }
+  for (const auto& e : kEntries) {
+    xe::store_and_swap<uint16_t>(table + e.offset, e.new_width);
+    xe::store_and_swap<uint16_t>(table + e.offset + 2, e.new_height);
+  }
+  if (!writable) {
+    heap->Protect(page, 0x1000, protect);
+  }
+  XELOGI("Dashboard: added 2560x1440 and 3840x2160 to the display settings");
+  return true;
+}
+
 // VdEnumerateVideoModes(callback, context): calls callback(mode, context) for
 // every mode the display supports until the callback returns FALSE. The 17559
 // dashboard (HDTV/VGA settings) keeps modes with a ~60 Hz refresh rate that
@@ -642,8 +704,10 @@ void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
   if (!callback) {
     return;
   }
-  X_VIDEO_MODE current;
-  VdQueryVideoMode(&current, false);
+  const auto stored =
+      Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
+          XCONFIG_USER_CATEGORY, XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+  const bool stored_interlaced = cvars::interlaced || stored.interlaced_;
 
   struct Mode {
     uint16_t width;
@@ -662,6 +726,10 @@ void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
              {1280, 720, false},
              {1920, 1080, false},
              {1920, 1080, true}};
+    if (PatchDashboardResolutionTable()) {
+      modes.push_back({2560, 1440, false});
+      modes.push_back({3840, 2160, false});
+    }
   }
 
   auto memory = kernel_state()->memory();
@@ -676,9 +744,8 @@ void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
     mode->height = m.height;
     mode->refresh_rate = refresh;
     const bool is_current =
-        m.width == current.display_width &&
-        m.height == current.display_height &&
-        (m.height != 1080 || m.progressive_1080 == !current.is_interlaced);
+        m.width == stored.width_.get() && m.height == stored.height_.get() &&
+        (m.height != 1080 || m.progressive_1080 == !stored_interlaced);
     uint32_t flags = 0x1;
     if (is_current) {
       flags |= 0x2;

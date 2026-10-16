@@ -419,6 +419,23 @@ struct Resolution {
   }
 };
 
+// Modes beyond the Xbox 360 output limit that Xenia adds to the dashboard's
+// display settings. Titles still get a 720p display mode; the host renders
+// with draw resolution scaling instead (2560x1440 = 2x, 3840x2160 = 3x).
+inline uint32_t DashboardUpscaleFactor(const Resolution& res) {
+  if (res.width_.get() == 2560 && res.height_.get() == 1440) {
+    return 2;
+  }
+  if (res.width_.get() == 3840 && res.height_.get() == 2160) {
+    return 3;
+  }
+  return 1;
+}
+
+inline Resolution GuestOutputResolution(const Resolution& res) {
+  return DashboardUpscaleFactor(res) > 1 ? Resolution(1280, 720) : res;
+}
+
 // Not sure why HDMI is assigned to composite, but ok.
 // XCONFIG_USER_AV_COMPOSITE_SCREENSZ
 inline const std::array<Resolution, 3> XHDTVResolution = {
