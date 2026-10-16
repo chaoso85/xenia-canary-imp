@@ -1246,14 +1246,45 @@ DECLARE_XAM_EXPORT1(XamUserLogon, kUserProfiles, kImplemented);
 dword_result_t XamUserLogonEx_entry(pointer_t<X_PROFILEENUMRESULT> profile_ptr,
                                     dword_t flags,
                                     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  auto run = [profile_ptr, flags](uint32_t& extended_error,
-                                  uint32_t& length) -> X_RESULT {
-    X_STATUS result = X_ERROR_SUCCESS;
+  if (!profile_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
 
-    extended_error = X_HRESULT_FROM_WIN32(result);
+  // The dashboard's own sign-in/out scene signs a single profile in
+  // (OfflineOnly | AddUser | NoPopupNotification = 0x25) or out
+  // (RemoveUser | NoPopupNotification = 0x28) through this call.
+  const uint64_t xuid = profile_ptr->xuid_offline;
+
+  auto run = [xuid, flags](uint32_t& extended_error,
+                           uint32_t& length) -> X_RESULT {
+    auto const profile_manager = kernel_state()->xam_state()->profile_manager();
+
+    if (flags & static_cast<uint32_t>(UserLogonFlags::ForceLiveLogOff)) {
+      for (uint32_t user_index = 0; user_index < XUserMaxUserCount;
+           user_index++) {
+        if (kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+          profile_manager->Logout(user_index, true);
+        }
+      }
+    }
+
+    if (xuid && (flags & static_cast<uint32_t>(UserLogonFlags::RemoveUser))) {
+      if (kernel_state()->xam_state()->IsUserSignedIn(xuid)) {
+        const uint8_t assigned_index =
+            profile_manager->GetUserIndexAssignedToProfile(xuid);
+        profile_manager->Logout(assigned_index, true);
+      }
+    }
+
+    if (xuid && (flags & static_cast<uint32_t>(UserLogonFlags::AddUser))) {
+      if (!kernel_state()->xam_state()->IsUserSignedIn(xuid)) {
+        profile_manager->Login(xuid, XUserIndexAny, true);
+      }
+    }
+
+    extended_error = X_HRESULT_FROM_WIN32(X_ERROR_SUCCESS);
     length = 0;
-
-    return result;
+    return X_ERROR_SUCCESS;
   };
 
   if (!overlapped_ptr) {
@@ -1264,7 +1295,7 @@ dword_result_t XamUserLogonEx_entry(pointer_t<X_PROFILEENUMRESULT> profile_ptr,
     return X_ERROR_IO_PENDING;
   }
 }
-DECLARE_XAM_EXPORT1(XamUserLogonEx, kUserProfiles, kSketchy);
+DECLARE_XAM_EXPORT1(XamUserLogonEx, kUserProfiles, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel
