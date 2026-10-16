@@ -104,12 +104,17 @@ dword_result_t XamWebInstrumentationCreateReport_entry(lpu16string_t name,
 DECLARE_XAM_EXPORT1(XamWebInstrumentationCreateReport, kNone, kStub);
 
 namespace {
-void SetWebReportVar(uint32_t handle, uint32_t name_ptr, uint32_t value_ptr,
+// SetUserVar(handle, var_index, value): XAM keeps up to 0x28 numbered
+// variables per report (index 0x26 is a repeatable slot).
+void SetWebReportVar(uint32_t handle, uint32_t var_index, uint32_t value_ptr,
                      bool escape) {
   if (handle == 0 || handle == 0xFFFFFFFF) {
     return;
   }
-  std::string name = TelemetryReadAnyString(name_ptr, 256);
+  if (var_index > 0x27) {
+    return;
+  }
+  std::string name = fmt::format("v{}", var_index);
   std::string value = TelemetryReadAnyString(value_ptr, 1024);
   {
     std::lock_guard<std::mutex> lock(web_report_mutex);
