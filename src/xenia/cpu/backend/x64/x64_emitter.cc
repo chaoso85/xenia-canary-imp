@@ -43,6 +43,8 @@ DEFINE_bool(debugprint_trap_log, false,
             "Log debugprint traps to the active debugger", "CPU");
 DEFINE_bool(ignore_undefined_externs, true,
             "Don't exit when an undefined extern is called.", "CPU");
+DEFINE_bool(undefined_externs_return_zero, true,
+            "Set guest r3 to 0 when an unimplemented import is called.", "CPU");
 DEFINE_bool(emit_source_annotations, false,
             "Add extra movs and nops to make disassembly easier to read.",
             "CPU");
@@ -793,6 +795,11 @@ uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
   } else {
     XELOGE("undefined extern call to {:08X} {}", function->address(),
            function->name());
+  }
+  if (cvars::undefined_externs_return_zero) {
+    // Leave a defined result for the guest instead of whatever was in r3
+    // (usually the first argument pointer, which callers read as TRUE).
+    reinterpret_cast<ppc::PPCContext_s*>(raw_context)->r[3] = 0;
   }
   return 0;
 }

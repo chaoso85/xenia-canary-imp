@@ -1052,6 +1052,64 @@ dword_result_t XamUpdateGetCurrentSystemVersion_entry() {
 }
 DECLARE_XAM_EXPORT1(XamUpdateGetCurrentSystemVersion, kNone, kStub);
 
+// --- Dashboard (FFFE07D1, 2.0.17559) support -------------------------------
+// Names/ordinals confirmed against xamd 17489 PDB (XDK Recovery 21256.18).
+
+// Ordinal 1217 (0x4C1). Previously listed as XamFitnessClearBodyProfileRecords;
+// xamd 17489 exports it as XampKioskGetInfo. Dashboard calls it with a
+// 0x10-byte struct whose first dword is the size; +0x8 = kiosk mode flag,
+// +0xC = kiosk id. Retail consoles are never in kiosk mode.
+struct X_XAM_KIOSK_INFO {
+  xe::be<uint32_t> size;
+  xe::be<uint32_t> unknown_04;
+  xe::be<uint32_t> is_kiosk_mode;
+  xe::be<uint32_t> kiosk_id;
+};
+static_assert_size(X_XAM_KIOSK_INFO, 0x10);
+
+dword_result_t XampKioskGetInfo_entry(pointer_t<X_XAM_KIOSK_INFO> info) {
+  if (!info || info->size < sizeof(X_XAM_KIOSK_INFO)) {
+    return X_E_INVALIDARG;
+  }
+  info->unknown_04 = 0;
+  info->is_kiosk_mode = 0;
+  info->kiosk_id = 0;
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XampKioskGetInfo, kNone, kImplemented);
+
+// "Demand" = privilege/tier demand (Silver/Gold) used by the dashboard before
+// marketplace / social actions. Without these the dashboard sees a pointer in
+// r3 as "demand active" and keeps re-issuing demands after profile sign-in.
+dword_result_t XamGetCurrentDemand_entry(lpdword_t user_index_ptr,
+                                         lpdword_t demand_type_ptr) {
+  if (user_index_ptr) {
+    *user_index_ptr = 0;
+  }
+  if (demand_type_ptr) {
+    *demand_type_ptr = 0;
+  }
+  return 0;  // FALSE: no demand in progress
+}
+DECLARE_XAM_EXPORT1(XamGetCurrentDemand, kNone, kStub);
+
+dword_result_t XamDemand_entry(dword_t user_index, dword_t demand_type,
+                               dword_t no_ui) {
+  return 1;  // TRUE: demand satisfied
+}
+DECLARE_XAM_EXPORT1(XamDemand, kNone, kStub);
+
+dword_result_t XamBeginDemand_entry(dword_t user_index, dword_t demand_type,
+                                    lpvoid_t demand_manifest) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBeginDemand, kNone, kStub);
+
+dword_result_t XamCompleteDemand_entry(dword_t success, dword_t reserved) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamCompleteDemand, kNone, kStub);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe
