@@ -1082,13 +1082,6 @@ dword_result_t XamGetDashBackstackData_entry(
 }
 DECLARE_XAM_EXPORT1(XamGetDashBackstackData, kNone, kImplemented);
 
-void XampWebInstrumentationSetProfileCounts_entry(dword_t live_profiles,
-                                                  dword_t local_profiles,
-                                                  dword_t adult_profiles,
-                                                  dword_t child_profiles) {}
-DECLARE_XAM_EXPORT1(XampWebInstrumentationSetProfileCounts, kUserProfiles,
-                    kStub);
-
 dword_result_t XamDoesOmniNeedConfiguration_entry() { return 0; }
 DECLARE_XAM_EXPORT1(XamDoesOmniNeedConfiguration, kNone, kStub);
 
@@ -1166,18 +1159,6 @@ dword_result_t XamLookupCommonStringByIndex_entry(dword_t string_index) {
   return 0;
 }
 DECLARE_XAM_EXPORT1(XamLookupCommonStringByIndex, kNone, kStub);
-
-dword_result_t XamLogLocalizationEtx_entry(dword_t error_code, dword_t unk) {
-  if (error_code == 0x80300034) {
-    // uses second unk for some function
-    return X_ERROR_SUCCESS;
-  } else if (error_code == 0x80300035) {
-    // uses second unk for some function
-    return X_ERROR_SUCCESS;
-  }
-  return X_E_NOT_IMPLEMENTED;
-}
-DECLARE_XAM_EXPORT1(XamLogLocalizationEtx, kNone, kStub);
 
 dword_result_t XamUpdateGetBaseSystemVersion_entry() {
   return kBaseKernelBuildVersion;
