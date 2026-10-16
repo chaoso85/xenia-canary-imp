@@ -149,8 +149,8 @@ std::string TelemetryReadUtf16(uint32_t guest_address, uint32_t max_length) {
     if (!TelemetryGuestReadable(address, 2)) {
       break;
     }
-    char16_t c = xe::load_and_swap<char16_t>(
-        kernel_memory()->TranslateVirtual<const uint8_t*>(address));
+    char16_t c = static_cast<char16_t>(xe::load_and_swap<uint16_t>(
+        kernel_memory()->TranslateVirtual<const uint8_t*>(address)));
     if (!c) {
       break;
     }
