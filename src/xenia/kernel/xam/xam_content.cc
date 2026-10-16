@@ -921,14 +921,8 @@ dword_result_t XamContentLaunchImageInternal_entry(lpvoid_t content_data_ptr,
 }
 DECLARE_XAM_EXPORT1(XamContentLaunchImageInternal, kContent, kStub);
 
-dword_result_t XamContentLaunchImageInternalEx_entry(lpvoid_t content_data_ptr,
-                                                     lpstring_t xex_path,
-                                                     dword_t flags) {
-  return xeXamContentLaunchImage(XUserIndexNone, nullptr, content_data_ptr,
-                                 sizeof(XCONTENT_DATA_INTERNAL), xex_path,
-                                 flags);
-}
-DECLARE_XAM_EXPORT1(XamContentLaunchImageInternalEx, kContent, kStub);
+// XamContentLaunchImageInternalEx is implemented in xam_info.cc (restarts
+// Xenia with the resolved content package).
 
 void XamContentRegisterChangeCallback_entry(dword_t callback) {
   kernel_state()->xam_state()->SetContentRegisterCallback(callback);

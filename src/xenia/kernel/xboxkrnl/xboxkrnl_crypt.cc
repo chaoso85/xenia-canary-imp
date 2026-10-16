@@ -1180,6 +1180,17 @@ dword_result_t XeKeysConsolePrivateKeySign_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(XeKeysConsolePrivateKeySign, kNone, kSketchy);
 
+// Truncated secondary console id (derived from the console certificate on a
+// real console). A fixed value like XeKeysGetConsoleID above.
+dword_result_t XeKeysGetTruncatedSecondaryConsoleId_entry(lpqword_t id) {
+  if (!id) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  *id = 0x0123456789ABCDEFull;
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(XeKeysGetTruncatedSecondaryConsoleId, kNone, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

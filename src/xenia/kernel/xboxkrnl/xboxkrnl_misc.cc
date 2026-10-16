@@ -175,6 +175,33 @@ dword_result_t MicDeviceRequest_entry(pointer_t<X_MIC_DEVICE> device_ptr) {
 }
 DECLARE_XBOXKRNL_EXPORT1(MicDeviceRequest, kNone, kStub);
 
+// --- ETX (event tracing) producers: accepted and discarded ------------------
+// EtxProducerRegister(guid, events, event_count, flags, producer_size,
+// producer): the producer block must be at least 0x40 bytes.
+dword_result_t EtxProducerRegister_entry(lpvoid_t guid, lpvoid_t events,
+                                         dword_t event_count, dword_t flags,
+                                         dword_t producer_size,
+                                         lpvoid_t producer) {
+  if (producer_size < 0x40 || !producer) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  std::memset(producer, 0, producer_size);
+  xe::store_and_swap<uint32_t>(producer, producer_size);
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerRegister, kNone, kStub);
+
+dword_result_t EtxProducerUnregister_entry(lpvoid_t producer) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerUnregister, kNone, kStub);
+
+dword_result_t EtxProducerLog_entry(lpvoid_t producer, dword_t event_id,
+                                    lpvoid_t data, dword_t data_size) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLog, kNone, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

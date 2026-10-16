@@ -116,6 +116,9 @@ class ContentManager {
                                  uint64_t& installation_progress,
                                  bool force_extract = false);
 
+  std::filesystem::path ResolvePackagePath(const uint64_t xuid,
+                                           const XCONTENT_DATA_INTERNAL& data);
+
  private:
   std::string GeneratePackageDevicePath(const std::filesystem::path& root_path);
   // Used in case of mounting package on guest (via XAM). Package is
@@ -127,8 +130,6 @@ class ContentManager {
   std::filesystem::path ResolvePackageRoot(
       const uint64_t xuid, const uint32_t title_id,
       const XContentType content_type) const;
-  std::filesystem::path ResolvePackagePath(const uint64_t xuid,
-                                           const XCONTENT_DATA_INTERNAL& data);
   std::unordered_set<uint32_t> FindPublisherTitleIds(
       const uint64_t xuid,
       uint32_t base_title_id = kCurrentlyRunningTitleId) const;

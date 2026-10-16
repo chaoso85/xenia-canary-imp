@@ -10,6 +10,7 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_video.h"
 
 #include "xenia/base/logging.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
@@ -17,6 +18,7 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_rtl.h"
 #include "xenia/kernel/xconfig.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(interlaced, false, "Toggles interlaced mode.", "Video");
@@ -591,6 +593,83 @@ void RegisterVideoExports(xe::cpu::ExportResolver* export_resolver,
   xeRtlInitializeCriticalSectionAndSpinCount(hsio_lock, pVdHSIOCalibrationLock,
                                              10000);
 }
+
+// --- Dashboard 17559: display discovery / mode enumeration ------------------
+// Retail kernel behaviour without an HDMI EDID: no discovery data, no EDID
+// blocks. VdEnumerateVideoModes calls a guest callback once per mode with a
+// 0x18-byte descriptor (layout from the 17559 kernel, flag bits partly
+// unverified) until the callback returns FALSE; we report the current mode.
+dword_result_t VdGetDisplayDiscoveryData_entry(lpvoid_t discovery_data) {
+  return 0;  // FALSE: no display discovery data available.
+}
+DECLARE_XBOXKRNL_EXPORT1(VdGetDisplayDiscoveryData, kVideo, kStub);
+
+dword_result_t VdReadEEDIDBlock_entry(dword_t block_index, lpvoid_t buffer) {
+  return 0;  // FALSE: no EDID (not connected over HDMI).
+}
+DECLARE_XBOXKRNL_EXPORT1(VdReadEEDIDBlock, kVideo, kStub);
+
+struct X_VD_ENUM_VIDEO_MODE {
+  xe::be<uint16_t> size;         // 0x00 = 0x16
+  xe::be<uint16_t> width;        // 0x02
+  xe::be<uint16_t> height;       // 0x04
+  uint8_t unknown_06;            // 0x06
+  uint8_t unknown_07;            // 0x07
+  xe::be<float> refresh_rate;    // 0x08
+  xe::be<uint32_t> flags;        // 0x0C bit0 valid, bit1 preferred
+  xe::be<uint32_t> refresh_int;  // 0x10
+  uint8_t av_type;               // 0x14
+  uint8_t unknown_15;            // 0x15
+  uint8_t pad[2];                // 0x16
+};
+static_assert_size(X_VD_ENUM_VIDEO_MODE, 0x18);
+
+void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
+  if (!callback) {
+    return;
+  }
+  X_VIDEO_MODE current;
+  VdQueryVideoMode(&current, false);
+
+  auto memory = kernel_state()->memory();
+  const uint32_t guest_mode =
+      memory->SystemHeapAlloc(sizeof(X_VD_ENUM_VIDEO_MODE));
+  auto mode = memory->TranslateVirtual<X_VD_ENUM_VIDEO_MODE*>(guest_mode);
+  std::memset(mode, 0, sizeof(*mode));
+  mode->size = 0x16;
+  mode->width = static_cast<uint16_t>(current.display_width);
+  mode->height = static_cast<uint16_t>(current.display_height);
+  mode->refresh_rate = current.refresh_rate;
+  mode->flags = 0x1 | 0x2 | (current.is_widescreen ? 0x8 : 0);
+  mode->refresh_int = static_cast<uint32_t>(float(current.refresh_rate));
+  mode->av_type = 3;
+  mode->unknown_15 = 1;
+
+  uint64_t args[] = {guest_mode, context};
+  kernel_state()->processor()->Execute(
+      XThread::GetCurrentThread()->thread_state(), callback, args,
+      xe::countof(args));
+  memory->SystemHeapFree(guest_mode);
+}
+DECLARE_XBOXKRNL_EXPORT1(VdEnumerateVideoModes, kVideo, kSketchy);
+
+dword_result_t VdGetOption_entry(dword_t option, lpdword_t value) {
+  if (value) {
+    *value = 0;
+  }
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdGetOption, kVideo, kStub);
+
+dword_result_t VdSetOption_entry(dword_t option, dword_t value) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdSetOption, kVideo, kStub);
+
+dword_result_t VdSetStudioRGBMode_entry(dword_t enable) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdSetStudioRGBMode, kVideo, kStub);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

@@ -550,7 +550,8 @@ dword_result_t XamContentLaunchImageInternalEx_entry(
   auto package_path = kernel_state()->content_manager()->ResolvePackagePath(
       content_data->xuid, *content_data);
   XELOGI("XamContentLaunchImageInternalEx: title {:08X} type {:08X} -> {}",
-         uint32_t(content_data->title_id), uint32_t(content_data->content_type),
+         uint32_t(content_data->title_id),
+         static_cast<uint32_t>(content_data->content_type.get()),
          xe::path_to_utf8(package_path));
   if (!std::filesystem::exists(package_path)) {
     return X_E_FAIL;
@@ -1245,6 +1246,312 @@ dword_result_t XamCompleteDemand_entry(dword_t success, dword_t reserved) {
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamCompleteDemand, kNone, kStub);
+
+// --- Dashboard 17559: remaining system services ----------------------------
+// Behaviour follows the retail 17559 XAM implementations of the same exports
+// for a console that is offline and has no cloud storage, Kinect, HD DVD or
+// family timers configured.
+
+// XamGetOnlineCountryFeatures(country): feature mask for an online country,
+// 0x80000000 if the country is not an online country.
+dword_result_t XamGetOnlineCountryFeatures_entry(dword_t country) {
+  static constexpr std::pair<uint8_t, uint32_t> kCountryFeatures[] = {
+      {4, 4},   {6, 12},  {5, 12},   {8, 12},  {13, 4},  {16, 12}, {19, 0},
+      {21, 0},  {23, 0},  {25, 12},  {30, 0},  {32, 12}, {34, 12}, {24, 12},
+      {37, 0},  {39, 4},  {42, 0},   {46, 0},  {44, 12}, {45, 0},  {50, 12},
+      {53, 8},  {56, 4},  {72, 0},   {71, 12}, {74, 12}, {76, 12}, {75, 12},
+      {82, 4},  {84, 4},  {236, 0},  {88, 0},  {89, 0},  {91, 4},  {93, 0},
+      {109, 0}, {31, 12}, {90, 12},  {18, 12}, {101, 4}, {97, 0},  {99, 4},
+      {35, 12}, {1, 0},   {103, 12}, {107, 0}};
+  const uint8_t wanted = static_cast<uint8_t>(country);
+  for (const auto& [id, features] : kCountryFeatures) {
+    if (id == wanted) {
+      return features;
+    }
+  }
+  return 0x80000000;
+}
+DECLARE_XAM_EXPORT1(XamGetOnlineCountryFeatures, kNone, kImplemented);
+
+// Last active user (single 64-bit value, read once).
+static bool last_active_user_valid_ = false;
+static uint64_t last_active_user_data_ = 0;
+
+dword_result_t XamSetLastActiveUserData_entry(lpqword_t data) {
+  if (data) {
+    last_active_user_data_ = *data;
+    last_active_user_valid_ = true;
+  } else {
+    last_active_user_valid_ = false;
+  }
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XamSetLastActiveUserData, kUserProfiles, kImplemented);
+
+dword_result_t XamGetLastActiveUserData_entry(lpqword_t data) {
+  if (!data || !last_active_user_valid_) {
+    return 0;
+  }
+  *data = last_active_user_data_;
+  last_active_user_valid_ = false;
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XamGetLastActiveUserData, kUserProfiles, kImplemented);
+
+// XamUserGetUserIndexMask(required_state): bit per user index whose sign-in
+// state has all bits of required_state (bit 0 = signed in locally,
+// bit 1 = signed in to Live).
+dword_result_t XamUserGetUserIndexMask_entry(dword_t required_state) {
+  uint32_t mask = 0;
+  for (uint32_t user_index = 0; user_index < XUserMaxUserCount; user_index++) {
+    if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+      continue;
+    }
+    const uint32_t state = 1;  // Signed in locally, never online.
+    if ((state & required_state) == required_state) {
+      mask |= 1u << user_index;
+    }
+  }
+  return mask;
+}
+DECLARE_XAM_EXPORT1(XamUserGetUserIndexMask, kUserProfiles, kImplemented);
+
+// XamUniSortCmpString(a, b, max_chars, flags): case-insensitive ordinal
+// compare used to sort lists.
+dword_result_t XamUniSortCmpString_entry(lpu16string_t a, lpu16string_t b,
+                                         dword_t max_chars, dword_t flags) {
+  const std::u16string left = a ? a.value() : std::u16string();
+  const std::u16string right = b ? b.value() : std::u16string();
+  const size_t count =
+      std::min<size_t>(max_chars ? uint32_t(max_chars) : SIZE_MAX,
+                       std::max(left.size(), right.size()));
+  for (size_t i = 0; i < count; i++) {
+    char16_t l = i < left.size() ? left[i] : 0;
+    char16_t r = i < right.size() ? right[i] : 0;
+    if (l >= u'a' && l <= u'z') {
+      l -= 0x20;
+    }
+    if (r >= u'a' && r <= u'z') {
+      r -= 0x20;
+    }
+    if (l != r) {
+      return l < r ? uint32_t(-1) : 1;
+    }
+    if (!l) {
+      break;
+    }
+  }
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamUniSortCmpString, kNone, kImplemented);
+
+// Family timers: not configured.
+dword_result_t XamPlayTimerIsEnabled_entry() { return 0; }
+DECLARE_XAM_EXPORT1(XamPlayTimerIsEnabled, kNone, kImplemented);
+
+void XamPlayTimerGetData_entry(lpvoid_t data) {
+  if (data) {
+    std::memset(data, 0, 0x14);
+  }
+}
+DECLARE_XAM_EXPORT1(XamPlayTimerGetData, kNone, kImplemented);
+
+void XamOfflineTimerGetData_entry(lpvoid_t data) {
+  if (data) {
+    std::memset(data, 0, 2);
+  }
+}
+DECLARE_XAM_EXPORT1(XamOfflineTimerGetData, kNone, kImplemented);
+
+// System online manifest: unknown while offline.
+dword_result_t XamGetCurrentSystemOnlineManifestRevision_entry(
+    lpqword_t revision) {
+  if (!revision) {
+    return X_E_INVALIDARG;
+  }
+  *revision = 0;
+  return 0x8B050008;  // Not signed in to Live.
+}
+DECLARE_XAM_EXPORT1(XamGetCurrentSystemOnlineManifestRevision, kNone,
+                    kImplemented);
+
+dword_result_t XamPackageManagerGetAuthoritativeManifestVersion_entry(
+    lpdword_t version) {
+  if (!version) {
+    return X_E_INVALIDARG;
+  }
+  *version = 0;
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerGetAuthoritativeManifestVersion, kNone,
+                    kStub);
+
+dword_result_t XamPackageManagerGetExperienceMode_entry(lpdword_t mode) {
+  if (mode) {
+    *mode = 0;
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerGetExperienceMode, kNone, kStub);
+
+dword_result_t XamPackageManagerFindPackageContainingIndexedXEX_entry(
+    lpstring_t xex_name, lpvoid_t package_info, dword_t package_info_size) {
+  return X_E_FAIL;  // Not part of any system package.
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerFindPackageContainingIndexedXEX, kNone,
+                    kStub);
+
+dword_result_t XamLoaderGetPriorTitleId_entry() { return 0; }
+DECLARE_XAM_EXPORT1(XamLoaderGetPriorTitleId, kNone, kImplemented);
+
+// Private (RFC1918 / link-local) address check. A PC running Xenia is on a
+// home network in practice.
+dword_result_t XamIsOnPrivateNetwork_entry() { return 1; }
+DECLARE_XAM_EXPORT1(XamIsOnPrivateNetwork, kNone, kStub);
+
+qword_result_t XamGetSecurityViolationsDetected_entry() { return 0; }
+DECLARE_XAM_EXPORT1(XamGetSecurityViolationsDetected, kNone, kImplemented);
+
+dword_result_t XamGetDefaultImage_entry(dword_t index, lpdword_t image_ptr,
+                                        lpdword_t image_size) {
+  if (index >= 3) {
+    return X_E_INVALIDARG;
+  }
+  return 0x8000FFFF;  // No built-in image available.
+}
+DECLARE_XAM_EXPORT1(XamGetDefaultImage, kNone, kStub);
+
+dword_result_t XamNuiGetSupportString_entry(lpvoid_t buffer,
+                                            dword_t buffer_size) {
+  static const char kNoKinect[] = "000000000000";
+  if (buffer && buffer_size) {
+    const size_t length =
+        std::min<size_t>(sizeof(kNoKinect), uint32_t(buffer_size));
+    std::memcpy(buffer, kNoKinect, length);
+    buffer.as<char*>()[length - 1] = 0;
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiGetSupportString, kNone, kStub);
+
+dword_result_t XamFitnessInitialize_entry() { return X_E_SUCCESS; }
+DECLARE_XAM_EXPORT1(XamFitnessInitialize, kNone, kStub);
+
+dword_result_t XamUserFlushLogonQueue_entry(
+    pointer_t<XAM_OVERLAPPED> overlapped) {
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserFlushLogonQueue, kUserProfiles, kImplemented);
+
+// Cloud ("network") storage: never enabled.
+dword_result_t XamNetworkStorageHasUserEnabledStorage_entry(
+    dword_t user_index) {
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageHasUserEnabledStorage, kContent,
+                    kImplemented);
+
+dword_result_t XamNetworkStorageGetStatus_entry(
+    dword_t user_index, lpdword_t status,
+    pointer_t<XAM_OVERLAPPED> overlapped) {
+  if (!status) {
+    return X_E_INVALIDARG;
+  }
+  *status = 0;  // Not available (2 = ready).
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageGetStatus, kContent, kImplemented);
+
+dword_result_t XamNetworkStorageGetNetworkDevice_entry(lpdword_t device_id) {
+  if (!device_id) {
+    return X_E_INVALIDARG;
+  }
+  return X_HRESULT_FROM_WIN32(X_ERROR_NOT_FOUND);
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageGetNetworkDevice, kContent, kImplemented);
+
+dword_result_t XamNetworkStorageDeviceHasCacheFile_entry(dword_t device_id) {
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageDeviceHasCacheFile, kContent,
+                    kImplemented);
+
+// Background downloads (Live): nothing to do offline.
+dword_result_t XamBackgroundDownloadSetMode_entry(dword_t mode) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadSetMode, kNone, kStub);
+
+dword_result_t XamBackgroundDownloadNetworkStorageEnable_entry(dword_t enable) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadNetworkStorageEnable, kNone, kStub);
+
+dword_result_t XamBackgroundDownloadNetworkStorageRegisterChangeCallback_entry(
+    lpvoid_t callback, lpvoid_t context) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadNetworkStorageRegisterChangeCallback,
+                    kNone, kStub);
+
+dword_result_t XdfInitialize_entry() { return X_E_SUCCESS; }
+DECLARE_XAM_EXPORT1(XdfInitialize, kNone, kStub);
+
+// XAM web cache (Live tiles, images): always a miss.
+dword_result_t XamCacheFetchFile_entry(lpvoid_t a1, lpvoid_t a2, lpvoid_t a3,
+                                       lpvoid_t a4, lpvoid_t a5) {
+  return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+}
+DECLARE_XAM_EXPORT1(XamCacheFetchFile, kNone, kStub);
+
+dword_result_t XamCacheDeleteFile_entry(lpvoid_t a1, lpvoid_t a2) {
+  return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+}
+DECLARE_XAM_EXPORT1(XamCacheDeleteFile, kNone, kStub);
+
+// XamShowOptionsUI opens the Guide settings blade; Xenia has no Guide.
+dword_result_t XamShowOptionsUI_entry(dword_t user_index,
+                                      pointer_t<XAM_OVERLAPPED> overlapped) {
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, X_ERROR_CANCELLED);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_CANCELLED;
+}
+DECLARE_XAM_EXPORT1(XamShowOptionsUI, kUI, kStub);
+
+// XamLoaderLaunchTitleEx(image_path, ddrive_path, command_line, flags).
+dword_result_t XamLoaderLaunchTitleEx_entry(lpstring_t image_path,
+                                            lpstring_t ddrive_path,
+                                            lpstring_t command_line,
+                                            dword_t flags) {
+  if (!image_path || image_path.value().empty()) {
+    return X_E_SUCCESS;  // Reboot to the dashboard we are already in.
+  }
+  const std::string guest_path(image_path.value());
+  XELOGI("XamLoaderLaunchTitleEx({}, flags {:08X})", guest_path,
+         uint32_t(flags));
+  auto entry = kernel_state()->file_system()->ResolvePath(guest_path);
+  auto host_entry = dynamic_cast<vfs::HostPathEntry*>(entry);
+  if (!host_entry) {
+    XELOGE("XamLoaderLaunchTitleEx: {} is not a host file", guest_path);
+    return X_E_FAIL;
+  }
+  std::filesystem::path dashboard = cvars::dashboard_path;
+  if (dashboard.empty() && kernel::IsSystemTitle(kernel_state()->title_id())) {
+    dashboard = GetRunningModuleHostPath();
+  }
+  RestartHostWithTarget(host_entry->host_path(), dashboard);
+}
+DECLARE_XAM_EXPORT1(XamLoaderLaunchTitleEx, kNone, kSketchy);
 
 }  // namespace xam
 }  // namespace kernel
