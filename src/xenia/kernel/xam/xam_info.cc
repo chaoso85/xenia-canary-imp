@@ -7,6 +7,10 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -568,6 +572,130 @@ DECLARE_XAM_EXPORT1(XamContentLaunchImageInternalEx, kContent, kSketchy);
 // When the dashboard is the running title, XAM hands the URI back to it as
 // launch data (0x3FC bytes: +4 = 0xC, +8 = user index, +0xC = URI) and
 // broadcasts notification 0x80040021 with (user_index << 16) | 0xC.
+// URI scheme rewriting done by XAM 17559 (XamLaunchURITaskProc ->
+// ResolveURIScheme). Each step rewrites "scheme:rest" with a template until a
+// scheme naming a title is reached. When two templates exist the first is the
+// built-in (offline) one, the second needs the downloaded Dash.MP packages.
+namespace {
+struct UriRewrite {
+  const char* scheme;
+  const char* builtin_template;
+  const char* marketplace_template;
+};
+constexpr UriRewrite kUriRewrites[] = {
+    {"pam", "dash:pam:%s", nullptr},
+    {"hub", "dash:pam:BuiltIn.Hub.xzp:%s", nullptr},
+    {"epix", "hub:root:Epix:%s", nullptr},
+    {"gamedetails", "hub:root:BuiltIn.ContentApp.xzp:gamedetails:MediaId=%s",
+     "hub:root:Dash.MP.ContentExplorer.lex:gamedetails:MediaId=%s"},
+    {"appdetails", "hub:root:BuiltIn.ContentApp.xzp:appdetails:%s",
+     "hub:root:Dash.MP.ContentExplorer.lex:appdetails:%s"},
+    {"contentdetails", "hub:root:BuiltIn.ContentApp.xzp:contentdetails:%s",
+     "hub:root:Dash.MP.ContentExplorer.lex:contentdetails:%s"},
+    {"contentlist", nullptr,
+     "hub:root:Dash.MP.ContentExplorer.lex:contentlist:%s"},
+    {"contentlibrary", "hub:root:BuiltIn.ContentApp.xzp:contentlibrary:%s",
+     "hub:root:Dash.MP.ContentExplorer.lex:contentlibrary:%s"},
+    {"gameslibrary", "contentlibrary:PackageType=1;%s", nullptr},
+    {"applibrary", "contentlibrary:PackageType=2;%s", nullptr},
+    {"gamesmp", nullptr, "hub:root:Dash.MP.ContentExplorer.lex:gamesmp:%s"},
+    {"appsmp", nullptr, "hub:root:Dash.MP.ContentExplorer.lex:appsmp:%s"},
+    {"userpins", nullptr, "hub:root:Dash.MP.ContentExplorer.lex:userpins:%s"},
+    {"videosmp", nullptr, "hub:root:Dash.MP.ContentExplorer.lex:videosmp:%s"},
+    {"search", nullptr, "pam:Dash.Search.xex:scene=results|%s"},
+    {"picturelibrary", "dash:library:picture:%s", nullptr},
+    {"videolibrary", "dash:library:video:%s", nullptr},
+    {"musiclibrary", "dash:library:music:%s", nullptr},
+    {"networkhelp", "dash:networktroubleshooter", nullptr},
+    {"mediaoverlay", nullptr,
+     "dash:pamoverlay:BuiltIn.Hub.xzp:overlay:Dash.MP.ContentExplorer.lex:"
+     "overlay:%s"},
+    {"http", nullptr, "app:58480880:http:%s"},
+    {"https", nullptr, "app:58480880:https:%s"},
+    {"microsoftstore", nullptr, "pam:Dash.MP.MicrosoftStore.lex:%s"},
+    {"newlivesignup", "app:FFFE07DE:%s", "app:FFFE07DE:%s"},
+    {"activityfeed", nullptr,
+     "hub:root:Dash.MP.ContentExplorer.lex:ActivityFeed:%s"},
+};
+struct UriTitleScheme {
+  const char* scheme;
+  uint32_t title_id;
+  bool is_app;
+};
+constexpr UriTitleScheme kUriTitleSchemes[] = {
+    {"dash", 0xFFFE07D1, false},
+    {"avatareditor", 0x584D07D1, false},
+    {"zune", 0x5848085B, true},
+    {"newlivesignup", 0xFFFE07DE, false},
+};
+
+bool IEquals(std::string_view a, std::string_view b) {
+  return a.size() == b.size() &&
+         std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+           return std::tolower(uint8_t(x)) == std::tolower(uint8_t(y));
+         });
+}
+
+std::string ApplyUriTemplate(const char* format, std::string_view rest) {
+  std::string out(format);
+  size_t pos = out.find("%s");
+  if (pos != std::string::npos) {
+    out.replace(pos, 2, rest);
+  }
+  return out;
+}
+
+// Returns false when the URI cannot be resolved offline. On success
+// out_title_id/out_rest hold the target title and the URI it receives.
+bool ResolveLaunchUri(std::string uri, uint32_t* out_title_id,
+                      std::string* out_rest) {
+  for (int step = 0; step < 10; ++step) {
+    size_t colon = uri.find(':');
+    std::string_view scheme = std::string_view(uri).substr(
+        0, colon == std::string::npos ? uri.size() : colon);
+    std::string rest =
+        colon == std::string::npos ? std::string() : uri.substr(colon + 1);
+    XELOGD("XamLaunchURI: resolve step {}: {}", step, uri);
+    if (IEquals(scheme, "title") || IEquals(scheme, "app") ||
+        IEquals(scheme, "game")) {
+      size_t id_end = rest.find(':');
+      *out_title_id =
+          uint32_t(std::strtoul(rest.substr(0, id_end).c_str(), nullptr, 16));
+      *out_rest =
+          id_end == std::string::npos ? std::string() : rest.substr(id_end + 1);
+      return true;
+    }
+    const UriTitleScheme* title_scheme = nullptr;
+    for (const auto& entry : kUriTitleSchemes) {
+      if (IEquals(scheme, entry.scheme)) {
+        title_scheme = &entry;
+        break;
+      }
+    }
+    if (title_scheme) {
+      uri = fmt::format("{}:{:08X}:{}", title_scheme->is_app ? "app" : "title",
+                        title_scheme->title_id, rest);
+      continue;
+    }
+    const UriRewrite* rewrite = nullptr;
+    for (const auto& entry : kUriRewrites) {
+      if (IEquals(scheme, entry.scheme)) {
+        rewrite = &entry;
+        break;
+      }
+    }
+    if (!rewrite) {
+      return false;
+    }
+    const char* format = rewrite->builtin_template
+                             ? rewrite->builtin_template
+                             : rewrite->marketplace_template;
+    uri = ApplyUriTemplate(format, rest);
+  }
+  return false;
+}
+}  // namespace
+
 dword_result_t XamLaunchURI_entry(dword_t user_index, lpstring_t uri,
                                   dword_t flags,
                                   pointer_t<XAM_OVERLAPPED> overlapped) {
@@ -579,17 +707,28 @@ dword_result_t XamLaunchURI_entry(dword_t user_index, lpstring_t uri,
          uint32_t(flags));
 
   X_RESULT result = X_ERROR_SUCCESS;
-  if (!kernel::IsSystemTitle(kernel_state()->title_id())) {
+  uint32_t target_title = 0;
+  std::string target_uri;
+  if (!ResolveLaunchUri(uri_string, &target_title, &target_uri)) {
+    XELOGW("XamLaunchURI: cannot resolve \"{}\" offline", uri_string);
+    result = X_E_NOTFOUND;
+  } else if (target_title != 0xFFFE07D1 ||
+             !kernel::IsSystemTitle(kernel_state()->title_id())) {
+    XELOGW(
+        "XamLaunchURI: \"{}\" targets title {:08X}, which is not "
+        "supported",
+        uri_string, target_title);
     result = X_E_FAIL;
   } else {
+    XELOGI("XamLaunchURI: dashboard URI \"{}\"", target_uri);
     constexpr size_t kLaunchDataSize = 0x3FC;
     constexpr size_t kUriOffset = 0xC;
     std::vector<uint8_t> launch_data(kLaunchDataSize, 0);
     xe::store_and_swap<uint32_t>(launch_data.data() + 4, 0xC);
     xe::store_and_swap<uint32_t>(launch_data.data() + 8, user_index);
     const size_t length =
-        std::min(uri_string.size(), kLaunchDataSize - kUriOffset - 1);
-    std::memcpy(launch_data.data() + kUriOffset, uri_string.data(), length);
+        std::min(target_uri.size(), kLaunchDataSize - kUriOffset - 1);
+    std::memcpy(launch_data.data() + kUriOffset, target_uri.data(), length);
 
     auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
     xam->loader_data().launch_data = std::move(launch_data);
