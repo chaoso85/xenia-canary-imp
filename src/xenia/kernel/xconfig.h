@@ -13,6 +13,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <numeric>
 
 #include "xenia/base/byte_order.h"
@@ -387,13 +388,20 @@ struct Resolution {
   std::string name_;
   xe::be<uint16_t> width_;
   xe::be<uint16_t> height_;
+  bool interlaced_ = false;
 
   Resolution(uint16_t width, uint16_t height) : width_(width), height_(height) {
     name_ = fmt::format("{}x{}", width, height);
   };
 
-  Resolution(uint32_t value) : width_(value >> 16), height_(value) {
-    name_ = fmt::format("{}x{}", width_.get(), height_.get());
+  // The dashboard stores interlaced modes (1080i) with a negative height.
+  Resolution(uint32_t value)
+      : width_(value >> 16),
+        height_(static_cast<uint16_t>(
+            std::abs(static_cast<int>(static_cast<int16_t>(value))))),
+        interlaced_(static_cast<int16_t>(value) < 0) {
+    name_ = fmt::format("{}x{}{}", width_.get(), height_.get(),
+                        interlaced_ ? "i" : "");
   };
 
   uint32_t to_host() const {

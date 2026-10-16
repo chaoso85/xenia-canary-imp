@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_video.h"
 
+#include <vector>
+
 #include "xenia/base/logging.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
@@ -74,6 +76,8 @@ static std::pair<uint32_t, uint32_t> CalculateScaledAspectRatio(
 
   return {display_x, display_y};
 }
+
+DECLARE_int32(avpack);
 
 namespace xe {
 namespace kernel {
@@ -233,7 +237,7 @@ void VdQueryVideoMode(X_VIDEO_MODE* video_mode,
 
   video_mode->display_width = resolution.width_.get();
   video_mode->display_height = resolution.height_.get();
-  video_mode->is_interlaced = cvars::interlaced;
+  video_mode->is_interlaced = cvars::interlaced || resolution.interlaced_;
   video_mode->is_widescreen = is_widescreen;
   video_mode->is_hi_def = video_mode->display_width >= 0x500;
   video_mode->refresh_rate = GetVideoRefreshRate(kernel_state());
@@ -288,7 +292,10 @@ DECLARE_XBOXKRNL_EXPORT1(VdSetDisplayMode, kVideo, kStub);
 dword_result_t VdSetDisplayModeOverride_entry(dword_t width, dword_t height,
                                               double_t refresh_rate,
                                               unknown_t unk3, unknown_t unk4) {
-  // refresh_rate = 0, 50, 59.9, etc.
+  // refresh_rate = 0, 50, 59.9, etc. Xenia does not drive a real display;
+  // the persistent choice arrives through XCONFIG_USER_AV_*_SCREENSZ.
+  XELOGI("VdSetDisplayModeOverride({}x{} @ {})", uint32_t(width),
+         uint32_t(height), double(refresh_rate));
   return 0;
 }
 DECLARE_XBOXKRNL_EXPORT1(VdSetDisplayModeOverride, kVideo, kStub);
@@ -624,6 +631,13 @@ struct X_VD_ENUM_VIDEO_MODE {
 };
 static_assert_size(X_VD_ENUM_VIDEO_MODE, 0x18);
 
+// VdEnumerateVideoModes(callback, context): calls callback(mode, context) for
+// every mode the display supports until the callback returns FALSE. The 17559
+// dashboard (HDTV/VGA settings) keeps modes with a ~60 Hz refresh rate that
+// appear in its own resolution tables; flags bit 2 marks progressive 1080
+// (without it 1080 is treated as 1080i). The selected mode is written back
+// with ExSetXConfigSetting(XCONFIG_USER_AV_*_SCREENSZ), which is what Xenia
+// uses as the guest display resolution.
 void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
   if (!callback) {
     return;
@@ -631,24 +645,63 @@ void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
   X_VIDEO_MODE current;
   VdQueryVideoMode(&current, false);
 
+  struct Mode {
+    uint16_t width;
+    uint16_t height;
+    bool progressive_1080;
+  };
+  std::vector<Mode> modes;
+  if (cvars::avpack == 6) {  // VGA
+    for (const auto& res : XVGAResolution) {
+      modes.push_back({res.width_.get(), res.height_.get(), true});
+    }
+  } else if (cvars::avpack == 0 || cvars::avpack == 3) {  // SCART/composite
+    modes = {{640, 480, false}};
+  } else {  // HDMI / component
+    modes = {{640, 480, false},
+             {1280, 720, false},
+             {1920, 1080, false},
+             {1920, 1080, true}};
+  }
+
   auto memory = kernel_state()->memory();
   const uint32_t guest_mode =
       memory->SystemHeapAlloc(sizeof(X_VD_ENUM_VIDEO_MODE));
   auto mode = memory->TranslateVirtual<X_VD_ENUM_VIDEO_MODE*>(guest_mode);
-  std::memset(mode, 0, sizeof(*mode));
-  mode->size = 0x16;
-  mode->width = static_cast<uint16_t>(current.display_width);
-  mode->height = static_cast<uint16_t>(current.display_height);
-  mode->refresh_rate = current.refresh_rate;
-  mode->flags = 0x1 | 0x2 | (current.is_widescreen ? 0x8 : 0);
-  mode->refresh_int = static_cast<uint32_t>(float(current.refresh_rate));
-  mode->av_type = 3;
-  mode->unknown_15 = 1;
+  const float refresh = float(GetVideoRefreshRate(kernel_state()));
+  for (const auto& m : modes) {
+    std::memset(mode, 0, sizeof(*mode));
+    mode->size = 0x16;
+    mode->width = m.width;
+    mode->height = m.height;
+    mode->refresh_rate = refresh;
+    const bool is_current =
+        m.width == current.display_width &&
+        m.height == current.display_height &&
+        (m.height != 1080 || m.progressive_1080 == !current.is_interlaced);
+    uint32_t flags = 0x1;
+    if (is_current) {
+      flags |= 0x2;
+    }
+    if (m.progressive_1080 && m.height == 1080) {
+      flags |= 0x4;
+    }
+    if (m.width * 3 != m.height * 4) {
+      flags |= 0x8;
+    }
+    mode->flags = flags;
+    mode->refresh_int = static_cast<uint32_t>(refresh);
+    mode->av_type = 3;
+    mode->unknown_15 = 1;
 
-  uint64_t args[] = {guest_mode, context};
-  kernel_state()->processor()->Execute(
-      XThread::GetCurrentThread()->thread_state(), callback, args,
-      xe::countof(args));
+    uint64_t args[] = {guest_mode, context};
+    uint64_t keep_going = kernel_state()->processor()->Execute(
+        XThread::GetCurrentThread()->thread_state(), callback, args,
+        xe::countof(args));
+    if (!static_cast<uint32_t>(keep_going)) {
+      break;
+    }
+  }
   memory->SystemHeapFree(guest_mode);
 }
 DECLARE_XBOXKRNL_EXPORT1(VdEnumerateVideoModes, kVideo, kSketchy);
