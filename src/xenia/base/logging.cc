@@ -10,8 +10,13 @@
 #include "xenia/base/logging.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <thread>
+#include <vector>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -47,6 +52,12 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
             "Logging");
 #else
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
+DEFINE_uint32(log_sessions_to_keep, 20,
+              "Before a new session starts, the previous log file is moved "
+              "into a 'logs' folder next to it, named after the time it was "
+              "last written. This many old session logs are kept; 0 disables "
+              "this and the log is overwritten on every start.",
+              "Logging");
 DEFINE_bool(log_to_stdout, true, "Write log output to stdout", "Logging");
 DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
 #endif  // XE_PLATFORM_ANDROID
@@ -432,6 +443,71 @@ class Logger {
   }
 };
 
+namespace {
+// Moves the previous session's log to <dir>/logs/<stem>_<time><ext> and prunes
+// old ones so restarts (e.g. dashboard -> title -> dashboard) keep history.
+void ArchivePreviousLog(const std::filesystem::path& log_path) {
+  namespace fs = std::filesystem;
+  uint32_t keep = cvars::log_sessions_to_keep;
+  std::error_code ec;
+  if (!keep || !fs::exists(log_path, ec) || ec ||
+      fs::file_size(log_path, ec) == 0 || ec) {
+    return;
+  }
+  fs::path archive_dir = log_path.parent_path() / "logs";
+  fs::create_directories(archive_dir, ec);
+  if (ec) {
+    return;
+  }
+  auto file_time = fs::last_write_time(log_path, ec);
+  auto sys_time = std::chrono::system_clock::now();
+  if (!ec) {
+    sys_time += std::chrono::duration_cast<std::chrono::system_clock::duration>(
+        file_time - fs::file_time_type::clock::now());
+  }
+  std::time_t t = std::chrono::system_clock::to_time_t(sys_time);
+  std::tm tm_local{};
+#if XE_PLATFORM_WIN32
+  localtime_s(&tm_local, &t);
+#else
+  localtime_r(&t, &tm_local);
+#endif
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &tm_local);
+  std::string stem = xe::path_to_utf8(log_path.stem());
+  std::string ext = xe::path_to_utf8(log_path.extension());
+  fs::path target = archive_dir / fmt::format("{}_{}{}", stem, stamp, ext);
+  for (int i = 2; fs::exists(target, ec) && i < 100; ++i) {
+    target = archive_dir / fmt::format("{}_{}_{}{}", stem, stamp, i, ext);
+  }
+  // When Xenia restarts itself (title launch / return to dashboard) the old
+  // process may still hold the file for a moment.
+  for (int attempt = 0; attempt < 30; ++attempt) {
+    fs::rename(log_path, target, ec);
+    if (!ec) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  if (ec) {
+    return;
+  }
+  std::vector<fs::path> archived;
+  for (auto& entry : fs::directory_iterator(archive_dir, ec)) {
+    std::string name = xe::path_to_utf8(entry.path().filename());
+    if (entry.is_regular_file() && name.rfind(stem + "_", 0) == 0 &&
+        xe::path_to_utf8(entry.path().extension()) == ext) {
+      archived.push_back(entry.path());
+    }
+  }
+  std::sort(archived.begin(), archived.end());
+  while (archived.size() > keep) {
+    fs::remove(archived.front(), ec);
+    archived.erase(archived.begin());
+  }
+}
+}  // namespace
+
 void InitializeLogging(const std::string_view app_name) {
   auto mem = memory::AlignedAlloc<Logger>(0x10);
   logger_ = new (mem) Logger(app_name);
@@ -448,9 +524,11 @@ void InitializeLogging(const std::string_view app_name) {
     // Default to app name.
     auto file_name = fmt::format("{}.log", app_name);
     auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
+    ArchivePreviousLog(file_path);
     log_file = xe::filesystem::OpenFile(file_path, "wt");
   } else {
     xe::filesystem::CreateParentFolder(cvars::log_file);
+    ArchivePreviousLog(cvars::log_file);
     log_file = xe::filesystem::OpenFile(cvars::log_file, "wt");
   }
   logger_->AddLogSink(std::make_unique<FileLogSink>(log_file, true));
