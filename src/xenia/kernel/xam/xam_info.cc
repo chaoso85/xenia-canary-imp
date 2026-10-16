@@ -29,10 +29,15 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
+#include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/xbox.h"
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/fmt/include/fmt/xchar.h"
+
+#if XE_PLATFORM_WIN32
+#include "xenia/base/platform_win.h"
+#endif
 
 DEFINE_int32(avpack, 8,
              "Video modes\n"
@@ -49,6 +54,12 @@ DEFINE_int32(avpack, 8,
 DEFINE_bool(staging_mode, 0,
             "Enables preview mode in dashboards to render debug information.",
             "Kernel");
+DEFINE_path(
+    dashboard_path, "",
+    "Host path of the dashboard xex. When set, titles launched from the "
+    "dashboard restart Xenia with the title, and exiting a title "
+    "restarts Xenia with this dashboard.",
+    "Kernel");
 
 namespace xe {
 namespace kernel {
@@ -477,7 +488,131 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetLaunchData, kNone, kSketchy);
 
+// Restart the emulator process with another host target (title package or
+// dashboard). Xenia cannot switch titles in-process. The dashboard path is
+// passed on so the new process can return to it.
+[[noreturn]] static void RestartHostWithTarget(
+    const std::filesystem::path& target,
+    const std::filesystem::path& dashboard) {
+  XELOGI("Restarting Xenia with: {}", xe::path_to_utf8(target));
+#if XE_PLATFORM_WIN32
+  wchar_t exe_path[MAX_PATH] = {};
+  GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+  std::wstring command_line = L"\"" + std::wstring(exe_path) + L"\"";
+  if (!dashboard.empty()) {
+    command_line += L" --dashboard_path=\"" + dashboard.wstring() + L"\"";
+  }
+  command_line += L" \"" + target.wstring() + L"\"";
+  STARTUPINFOW startup_info = {};
+  startup_info.cb = sizeof(startup_info);
+  PROCESS_INFORMATION process_info = {};
+  if (CreateProcessW(exe_path, command_line.data(), nullptr, nullptr, FALSE, 0,
+                     nullptr, nullptr, &startup_info, &process_info)) {
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+  } else {
+    XELOGE("CreateProcessW failed: {}", GetLastError());
+  }
+#else
+  XELOGE("Restarting with a new title is only implemented on Windows");
+#endif
+  xe::FlushLog();
+  std::quick_exit(0);
+}
+
+// Host path of the running executable module, if it lives on a host folder.
+static std::filesystem::path GetRunningModuleHostPath() {
+  auto module = kernel_state()->GetExecutableModule();
+  if (!module) {
+    return {};
+  }
+  auto entry = kernel_state()->file_system()->ResolvePath(module->path());
+  auto host_entry = dynamic_cast<vfs::HostPathEntry*>(entry);
+  return host_entry ? host_entry->host_path() : std::filesystem::path();
+}
+
+static void ReturnToDashboardIfConfigured() {
+  if (cvars::dashboard_path.empty() ||
+      kernel::IsSystemTitle(kernel_state()->title_id())) {
+    return;
+  }
+  RestartHostWithTarget(cvars::dashboard_path, {});
+}
+
+// The dashboard launches installed content (XBLA, GOD, demos...) with the
+// content data it got from the content enumerator.
+dword_result_t XamContentLaunchImageInternalEx_entry(
+    pointer_t<XCONTENT_DATA_INTERNAL> content_data, lpstring_t image_name,
+    dword_t flags) {
+  if (!content_data) {
+    return X_E_INVALIDARG;
+  }
+  auto package_path = kernel_state()->content_manager()->ResolvePackagePath(
+      content_data->xuid, *content_data);
+  XELOGI("XamContentLaunchImageInternalEx: title {:08X} type {:08X} -> {}",
+         uint32_t(content_data->title_id), uint32_t(content_data->content_type),
+         xe::path_to_utf8(package_path));
+  if (!std::filesystem::exists(package_path)) {
+    return X_E_FAIL;
+  }
+  std::filesystem::path dashboard = cvars::dashboard_path;
+  if (dashboard.empty() && kernel::IsSystemTitle(kernel_state()->title_id())) {
+    dashboard = GetRunningModuleHostPath();
+  }
+  RestartHostWithTarget(package_path, dashboard);
+}
+DECLARE_XAM_EXPORT1(XamContentLaunchImageInternalEx, kContent, kSketchy);
+
+// Dashboard navigation ("gameslibrary:", "contentlibrary:", "dash:...").
+// When the dashboard is the running title, XAM hands the URI back to it as
+// launch data (0x3FC bytes: +4 = 0xC, +8 = user index, +0xC = URI) and
+// broadcasts notification 0x80040021 with (user_index << 16) | 0xC.
+dword_result_t XamLaunchURI_entry(dword_t user_index, lpstring_t uri,
+                                  dword_t flags,
+                                  pointer_t<XAM_OVERLAPPED> overlapped) {
+  if (!uri || uri.value().empty()) {
+    return X_E_INVALIDARG;
+  }
+  const std::string uri_string(uri.value());
+  XELOGI("XamLaunchURI({}, \"{}\", {:08X})", uint32_t(user_index), uri_string,
+         uint32_t(flags));
+
+  X_RESULT result = X_ERROR_SUCCESS;
+  if (!kernel::IsSystemTitle(kernel_state()->title_id())) {
+    result = X_E_FAIL;
+  } else {
+    constexpr size_t kLaunchDataSize = 0x3FC;
+    constexpr size_t kUriOffset = 0xC;
+    std::vector<uint8_t> launch_data(kLaunchDataSize, 0);
+    xe::store_and_swap<uint32_t>(launch_data.data() + 4, 0xC);
+    xe::store_and_swap<uint32_t>(launch_data.data() + 8, user_index);
+    const size_t length =
+        std::min(uri_string.size(), kLaunchDataSize - kUriOffset - 1);
+    std::memcpy(launch_data.data() + kUriOffset, uri_string.data(), length);
+
+    auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+    xam->loader_data().launch_data = std::move(launch_data);
+    kernel_state()->BroadcastNotification(XNotificationID(0x80040021),
+                                          (uint32_t(user_index) << 16) | 0xC);
+  }
+
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamLaunchURI, kNone, kSketchy);
+
+dword_result_t XamPushBackURI_entry(lpstring_t uri, dword_t flags) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPushBackURI, kNone, kStub);
+
 void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
+  if (!raw_name_ptr || raw_name_ptr.value().empty()) {
+    ReturnToDashboardIfConfigured();
+  }
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
 
   auto& loader_data = xam->loader_data();
@@ -528,6 +663,7 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
 DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kSketchy);
 
 void XamLoaderTerminateTitle_entry() {
+  ReturnToDashboardIfConfigured();
   std::string title = "Title terminated";
   std::string message = "Game requested exit to dashboard.";
   assert_always("Game requested exit to dashboard via XamLoaderTerminateTitle");
