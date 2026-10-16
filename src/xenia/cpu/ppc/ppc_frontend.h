@@ -14,6 +14,7 @@
 
 #include "xenia/base/type_pool.h"
 #include "xenia/cpu/function.h"
+#include "xenia/cpu/ppc/ppc_guest_trace.h"
 #include "xenia/memory.h"
 
 namespace xe {
@@ -46,6 +47,7 @@ class PPCFrontend {
   Processor* processor() const { return processor_; }
   Memory* memory() const;
   PPCBuiltins* builtins() { return &builtins_; }
+  const GuestTrace& guest_trace() const { return guest_trace_; }
 
   bool DeclareFunction(GuestFunction* function);
   bool DefineFunction(GuestFunction* function, uint32_t debug_info_flags);
@@ -53,6 +55,7 @@ class PPCFrontend {
  private:
   Processor* processor_;
   PPCBuiltins builtins_ = {0};
+  GuestTrace guest_trace_;
   TypePool<PPCTranslator, PPCFrontend*> translator_pool_;
 };
 // Checks the state of the global lock and sets scratch to the current MSR
