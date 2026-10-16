@@ -155,7 +155,7 @@ Emulator::Emulator(const std::filesystem::path& command_line,
              "given.\n\nThe quickstart guide explains how to use digital or "
              "physical games from your Xbox 360 console.\n\nWould you like "
              "to open it?",
-             L"Xenia", MB_YESNO | MB_ICONQUESTION) == IDYES)) {
+             L"Xenia Improved", MB_YESNO | MB_ICONQUESTION) == IDYES)) {
       LaunchWebBrowser(
           "https://github.com/xenia-canary/xenia-canary/wiki/"
           "Quickstart#how-to-rip-games");

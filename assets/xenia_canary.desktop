@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Xenia Canary
+Name=Xenia Improved
 GenericName=Xbox 360 Emulator
 Comment=Xbox 360 Research Emulator
 Exec=xenia_canary %f
