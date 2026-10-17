@@ -8,7 +8,9 @@
  */
 
 #include "xenia/kernel/xam/xam_state.h"
+#include "third_party/fmt/include/fmt/format.h"
 #include "xenia/emulator.h"
+#include "xenia/vfs/virtual_file_system.h"
 
 namespace xe {
 namespace kernel {
@@ -92,19 +94,34 @@ void XamState::LoadLanguageTypefacePatch() {
 }
 
 uint32_t XamState::GetLanguageTypefacePatch(uint32_t language) const {
-  // checks an out of bounds address to see if either a flag of 0x1000 or 0x2000
-  // is set. If first then use xttp1, if other use xttp2, else just return empty
-  // pointer. for now only usng xttp2
+  // XAM 17559 picks xttp1 or xttp2 from a flag in its own image (0x1000 =
+  // xttp1, 0x2000 = xttp2, neither = no patch). Flash images ship only one of
+  // them (17559 retail: xttp1), so use whichever file is present next to the
+  // dashboard. Without the patch the system font lacks glyphs and metrics the
+  // dashboard expects (wrong highlight font, clipped header text).
   uint32_t index = 0;
+  const char* file = nullptr;
   if (language == 17) {  // kSChinese
     index = 1;
+    file = "XenonSCLatin";
   } else if (language == 8) {  // kTChinese
     index = 2;
+    file = "XenonCLatin";
   } else {
     index = 3;
+    file = "XenonJKLatin";
   }
 
-  return language_type_face_patch_[index];
+  auto file_system = kernel_state_->file_system();
+  if (file_system) {
+    if (file_system->ResolvePath(fmt::format("media:\\{}.xttp2", file))) {
+      return language_type_face_patch_[index];
+    }
+    if (file_system->ResolvePath(fmt::format("media:\\{}.xttp1", file))) {
+      return language_type_face_patch_[index + 3];
+    }
+  }
+  return 0;
 }
 
 void XamState::LoadIptvServiceName() {
