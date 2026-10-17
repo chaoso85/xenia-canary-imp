@@ -613,8 +613,37 @@ void RegisterVideoExports(xe::cpu::ExportResolver* export_resolver,
 // blocks. VdEnumerateVideoModes calls a guest callback once per mode with a
 // 0x18-byte descriptor (layout from the 17559 kernel, flag bits partly
 // unverified) until the callback returns FALSE; we report the current mode.
+// VdGetDisplayDiscoveryData(data): copies the kernel's 0x23-byte display
+// discovery block when data->size == 0x23. Fields used by the 17559
+// dashboard: +0x04 flags (bit 8 set = standard HDTV timings), +0x15/+0x16
+// physical aspect ratio, +0x1D (unaligned u32) connection: 1 = VGA,
+// 2 = component, 3 = HDMI. Without it the dashboard's display settings stay
+// in an "unknown display" state that drops every enumerated mode.
 dword_result_t VdGetDisplayDiscoveryData_entry(lpvoid_t discovery_data) {
-  return 0;  // FALSE: no display discovery data available.
+  if (!discovery_data || xe::load_and_swap<uint32_t>(discovery_data) != 0x23) {
+    return 0;
+  }
+  uint32_t connection;
+  switch (cvars::avpack) {
+    case 6:  // VGA
+      connection = 1;
+      break;
+    case 4:  // component
+      connection = 2;
+      break;
+    case 8:  // HDMI
+      connection = 3;
+      break;
+    default:
+      return 0;
+  }
+  auto data = discovery_data.as<uint8_t*>();
+  std::memset(data + 4, 0, 0x23 - 4);
+  xe::store_and_swap<uint32_t>(data + 0x04, 0x00000100);
+  data[0x15] = 16;
+  data[0x16] = 9;
+  xe::store_and_swap<uint32_t>(data + 0x1D, connection);
+  return 1;
 }
 DECLARE_XBOXKRNL_EXPORT1(VdGetDisplayDiscoveryData, kVideo, kStub);
 
