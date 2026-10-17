@@ -227,6 +227,10 @@ dword_result_t XamLogLocalizationEtx_entry(dword_t event_code, dword_t data) {
                      : event_code == 0x80300034 ? "ResourceFallback"
                                                 : nullptr;
   if (!kind) {
+    // Real XAM only handles the two codes above and returns E_NOTIMPL.
+    TelemetryLog("LocalizationEtx",
+                 fmt::format("event={:08X} data={:08X} (unhandled)",
+                             uint32_t(event_code), uint32_t(data)));
     return X_E_NOT_IMPLEMENTED;
   }
   std::string detail = TelemetryReadAnyString(data, 256);

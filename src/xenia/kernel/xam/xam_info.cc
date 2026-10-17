@@ -1506,6 +1506,22 @@ dword_result_t XamPackageManagerGetAuthoritativeManifestVersion_entry(
 DECLARE_XAM_EXPORT1(XamPackageManagerGetAuthoritativeManifestVersion, kNone,
                     kStub);
 
+// XamPackageManagerGetFilePathW(file_name, buffer, buffer_chars): looks the
+// file up in the installed system-update packages ($SystemUpdate). Xenia has
+// none, so report "not found"; the dashboard then falls back to its built-in
+// resources (e.g. langpack://L.<app>.<pack>.xzp language packs).
+dword_result_t XamPackageManagerGetFilePathW_entry(lpu16string_t file_name,
+                                                   lpvoid_t buffer,
+                                                   dword_t buffer_chars) {
+  if (buffer && buffer_chars) {
+    xe::store_and_swap<uint16_t>(buffer, 0);
+  }
+  XELOGD("XamPackageManagerGetFilePathW({}): not installed",
+         file_name ? xe::to_utf8(file_name.value()) : std::string());
+  return X_E_NOTFOUND;
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerGetFilePathW, kNone, kStub);
+
 dword_result_t XamPackageManagerGetExperienceMode_entry(lpdword_t mode) {
   if (mode) {
     *mode = 0;
