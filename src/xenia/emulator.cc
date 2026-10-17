@@ -37,6 +37,7 @@
 #include "xenia/cpu/thread_state.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
+#include "xenia/gpu/texture_cache.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/kernel_state.h"
@@ -47,6 +48,7 @@
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
+#include "xenia/kernel/xconfig.h"
 #include "xenia/memory.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -155,7 +157,7 @@ Emulator::Emulator(const std::filesystem::path& command_line,
              "given.\n\nThe quickstart guide explains how to use digital or "
              "physical games from your Xbox 360 console.\n\nWould you like "
              "to open it?",
-             L"Xenia", MB_YESNO | MB_ICONQUESTION) == IDYES)) {
+             L"Xenia Improved", MB_YESNO | MB_ICONQUESTION) == IDYES)) {
       LaunchWebBrowser(
           "https://github.com/xenia-canary/xenia-canary/wiki/"
           "Quickstart#how-to-rip-games");
@@ -327,6 +329,21 @@ X_STATUS Emulator::Setup(
 #undef LOAD_KERNEL_MODULE
   plugin_loader_ = std::make_unique<xe::patcher::PluginLoader>(
       kernel_state_.get(), storage_root() / "plugins");
+
+  {
+    // A 2K/4K mode picked in the dashboard's display settings is rendered as
+    // 720p output with host resolution scaling.
+    const auto dash_resolution =
+        kernel::Resolution(kernel_state_->xconfig()->ReadSetting<uint32_t>(
+            kernel::XCONFIG_USER_CATEGORY,
+            kernel::XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+    const uint32_t upscale = kernel::DashboardUpscaleFactor(dash_resolution);
+    if (upscale > 1) {
+      XELOGI("{}: display mode {} -> 1280x720 with {}x resolution scale",
+             __func__, dash_resolution.name_, upscale);
+      gpu::TextureCache::SetMinimumDrawResolutionScale(upscale);
+    }
+  }
 
   XELOGI("{}: Starting graphics_system...", __func__);
   // Setup the core components.

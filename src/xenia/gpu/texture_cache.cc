@@ -144,12 +144,22 @@ TextureCache::~TextureCache() {
   }
 }
 
+namespace {
+uint32_t minimum_draw_resolution_scale = 1;
+}  // namespace
+
+void TextureCache::SetMinimumDrawResolutionScale(uint32_t scale) {
+  minimum_draw_resolution_scale = std::max(UINT32_C(1), scale);
+}
+
 bool TextureCache::GetConfigDrawResolutionScale(uint32_t& x_out,
                                                 uint32_t& y_out) {
   uint32_t config_x =
-      uint32_t(std::max(INT32_C(1), cvars::draw_resolution_scale_x));
+      std::max(minimum_draw_resolution_scale,
+               uint32_t(std::max(INT32_C(1), cvars::draw_resolution_scale_x)));
   uint32_t config_y =
-      uint32_t(std::max(INT32_C(1), cvars::draw_resolution_scale_y));
+      std::max(minimum_draw_resolution_scale,
+               uint32_t(std::max(INT32_C(1), cvars::draw_resolution_scale_y)));
 
   uint32_t clamped_x = std::min(kMaxDrawResolutionScaleAlongAxis, config_x);
   uint32_t clamped_y = std::min(kMaxDrawResolutionScaleAlongAxis, config_y);

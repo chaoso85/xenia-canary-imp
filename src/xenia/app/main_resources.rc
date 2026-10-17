@@ -1,3 +1,25 @@
 //{{NO_DEPENDENCIES}}
 
 MAINICON               ICON                    "..\\..\\..\\assets\\icon\\icon.ico"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Xenia Improved"
+      VALUE "ProductName", "Xenia Improved"
+      VALUE "InternalName", "xenia_canary"
+      VALUE "OriginalFilename", "xenia_canary.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

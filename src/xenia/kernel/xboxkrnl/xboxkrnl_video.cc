@@ -9,7 +9,10 @@
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_video.h"
 
+#include <vector>
+
 #include "xenia/base/logging.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
@@ -17,6 +20,7 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_rtl.h"
 #include "xenia/kernel/xconfig.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(interlaced, false, "Toggles interlaced mode.", "Video");
@@ -72,6 +76,8 @@ static std::pair<uint32_t, uint32_t> CalculateScaledAspectRatio(
 
   return {display_x, display_y};
 }
+
+DECLARE_int32(avpack);
 
 namespace xe {
 namespace kernel {
@@ -215,23 +221,30 @@ void VdGetCurrentDisplayInformation_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(VdGetCurrentDisplayInformation, kVideo, kStub);
 
-void VdQueryVideoMode(X_VIDEO_MODE* video_mode,
-                      [[maybe_unused]] bool is_internal_resolution) {
+void VdQueryVideoMode(X_VIDEO_MODE* video_mode, bool is_internal_resolution) {
   // TODO(benvanik): get info from actual display.
   std::memset(video_mode, 0, sizeof(X_VIDEO_MODE));
 
   // Later calculate if resolution is widescreen or not and apply flag
   // accordingly. Technically possible resolutions should depend on av_pack, but
   // we can ignore it.
-  const auto resolution =
+  const auto stored_resolution =
       Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
           XCONFIG_USER_CATEGORY, XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+  // The dashboard's display settings query the "real" mode to mark the
+  // current choice, so it sees 2K/4K as stored; everything else gets the
+  // 720p mode those choices are rendered with.
+  const bool dashboard_real_query =
+      is_internal_resolution && kernel_state()->title_id() == 0xFFFE07D1;
+  const auto resolution = dashboard_real_query
+                              ? stored_resolution
+                              : GuestOutputResolution(stored_resolution);
 
   const auto is_widescreen = IsWidescreen(kernel_state(), resolution);
 
   video_mode->display_width = resolution.width_.get();
   video_mode->display_height = resolution.height_.get();
-  video_mode->is_interlaced = cvars::interlaced;
+  video_mode->is_interlaced = cvars::interlaced || resolution.interlaced_;
   video_mode->is_widescreen = is_widescreen;
   video_mode->is_hi_def = video_mode->display_width >= 0x500;
   video_mode->refresh_rate = GetVideoRefreshRate(kernel_state());
@@ -239,6 +252,10 @@ void VdQueryVideoMode(X_VIDEO_MODE* video_mode,
       static_cast<uint32_t>(GetVideoStandard(kernel_state()));
   video_mode->pixel_rate = 0x8A;
   video_mode->widescreen_flag = is_widescreen ? 0x01 : 0x03;
+  XELOGI("VdQueryVideoMode: {}x{}{} (stored {}, internal query {})",
+         video_mode->display_width.get(), video_mode->display_height.get(),
+         video_mode->is_interlaced ? "i" : "", stored_resolution.name_,
+         is_internal_resolution);
 }
 
 void VdQueryRealVideoMode_entry(pointer_t<X_VIDEO_MODE> video_mode) {
@@ -286,7 +303,10 @@ DECLARE_XBOXKRNL_EXPORT1(VdSetDisplayMode, kVideo, kStub);
 dword_result_t VdSetDisplayModeOverride_entry(dword_t width, dword_t height,
                                               double_t refresh_rate,
                                               unknown_t unk3, unknown_t unk4) {
-  // refresh_rate = 0, 50, 59.9, etc.
+  // refresh_rate = 0, 50, 59.9, etc. Xenia does not drive a real display;
+  // the persistent choice arrives through XCONFIG_USER_AV_*_SCREENSZ.
+  XELOGI("VdSetDisplayModeOverride({}x{} @ {})", uint32_t(width),
+         uint32_t(height), double(refresh_rate));
   return 0;
 }
 DECLARE_XBOXKRNL_EXPORT1(VdSetDisplayModeOverride, kVideo, kStub);
@@ -591,6 +611,218 @@ void RegisterVideoExports(xe::cpu::ExportResolver* export_resolver,
   xeRtlInitializeCriticalSectionAndSpinCount(hsio_lock, pVdHSIOCalibrationLock,
                                              10000);
 }
+
+// --- Dashboard 17559: display discovery / mode enumeration ------------------
+// Retail kernel behaviour without an HDMI EDID: no discovery data, no EDID
+// blocks. VdEnumerateVideoModes calls a guest callback once per mode with a
+// 0x18-byte descriptor (layout from the 17559 kernel, flag bits partly
+// unverified) until the callback returns FALSE; we report the current mode.
+// VdGetDisplayDiscoveryData(data): copies the kernel's 0x23-byte display
+// discovery block when data->size == 0x23. Fields used by the 17559
+// dashboard: +0x04 flags (bit 8 set = standard HDTV timings), +0x15/+0x16
+// physical aspect ratio, +0x1D (unaligned u32) connection: 1 = VGA,
+// 2 = component, 3 = HDMI. Without it the dashboard's display settings stay
+// in an "unknown display" state that drops every enumerated mode.
+dword_result_t VdGetDisplayDiscoveryData_entry(lpvoid_t discovery_data) {
+  if (!discovery_data || xe::load_and_swap<uint32_t>(discovery_data) != 0x23) {
+    return 0;
+  }
+  uint32_t connection;
+  switch (cvars::avpack) {
+    case 6:  // VGA
+      connection = 1;
+      break;
+    case 4:  // component
+      connection = 2;
+      break;
+    case 8:  // HDMI
+      connection = 3;
+      break;
+    default:
+      return 0;
+  }
+  auto data = discovery_data.as<uint8_t*>();
+  std::memset(data + 4, 0, 0x23 - 4);
+  xe::store_and_swap<uint32_t>(data + 0x04, 0x00000100);
+  data[0x15] = 16;
+  data[0x16] = 9;
+  xe::store_and_swap<uint32_t>(data + 0x1D, connection);
+  return 1;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdGetDisplayDiscoveryData, kVideo, kStub);
+
+dword_result_t VdReadEEDIDBlock_entry(dword_t block_index, lpvoid_t buffer) {
+  return 0;  // FALSE: no EDID (not connected over HDMI).
+}
+DECLARE_XBOXKRNL_EXPORT1(VdReadEEDIDBlock, kVideo, kStub);
+
+struct X_VD_ENUM_VIDEO_MODE {
+  xe::be<uint16_t> size;         // 0x00 = 0x16
+  xe::be<uint16_t> width;        // 0x02
+  xe::be<uint16_t> height;       // 0x04
+  uint8_t unknown_06;            // 0x06
+  uint8_t unknown_07;            // 0x07
+  xe::be<float> refresh_rate;    // 0x08
+  xe::be<uint32_t> flags;        // 0x0C bit0 valid, bit1 preferred
+  xe::be<uint32_t> refresh_int;  // 0x10
+  uint8_t av_type;               // 0x14
+  uint8_t unknown_15;            // 0x15
+  uint8_t pad[2];                // 0x16
+};
+static_assert_size(X_VD_ENUM_VIDEO_MODE, 0x18);
+
+// The 17559 dashboard only lists modes found in its resolution table at
+// 0x920201C0 ({u16 width, u16 height, u16, u16 flags} x 10). Two rarely used
+// VGA entries (1280x768, 1360x768) are replaced in guest memory with 2560x1440
+// and 3840x2160 so they can be picked from the HDTV settings. The original
+// bytes are checked first, so other dashboard versions are left untouched.
+static bool PatchDashboardResolutionTable() {
+  constexpr uint32_t kTable = 0x920201C0;
+  struct Entry {
+    uint32_t offset;
+    uint16_t old_width, old_height, new_width, new_height;
+  };
+  constexpr Entry kEntries[] = {{4 * 8, 1280, 768, 2560, 1440},
+                                {6 * 8, 1360, 768, 3840, 2160}};
+  if (kernel_state()->title_id() != 0xFFFE07D1) {
+    return false;
+  }
+  auto memory = kernel_state()->memory();
+  auto heap = memory->LookupHeap(kTable);
+  uint32_t protect = 0;
+  if (!heap || !heap->QueryProtect(kTable, &protect) ||
+      !(protect & kMemoryProtectRead)) {
+    return false;
+  }
+  auto table = memory->TranslateVirtual<uint8_t*>(kTable);
+  bool already_patched = true;
+  for (const auto& e : kEntries) {
+    uint16_t w = xe::load_and_swap<uint16_t>(table + e.offset);
+    uint16_t h = xe::load_and_swap<uint16_t>(table + e.offset + 2);
+    if (w == e.new_width && h == e.new_height) {
+      continue;
+    }
+    already_patched = false;
+    if (w != e.old_width || h != e.old_height) {
+      return false;
+    }
+  }
+  if (already_patched) {
+    return true;
+  }
+  const uint32_t page = kTable & ~0xFFFu;
+  const bool writable = (protect & kMemoryProtectWrite) != 0;
+  if (!writable) {
+    heap->Protect(page, 0x1000, kMemoryProtectRead | kMemoryProtectWrite);
+  }
+  for (const auto& e : kEntries) {
+    xe::store_and_swap<uint16_t>(table + e.offset, e.new_width);
+    xe::store_and_swap<uint16_t>(table + e.offset + 2, e.new_height);
+  }
+  if (!writable) {
+    heap->Protect(page, 0x1000, protect);
+  }
+  XELOGI("Dashboard: added 2560x1440 and 3840x2160 to the display settings");
+  return true;
+}
+
+// VdEnumerateVideoModes(callback, context): calls callback(mode, context) for
+// every mode the display supports until the callback returns FALSE. The 17559
+// dashboard (HDTV/VGA settings) keeps modes with a ~60 Hz refresh rate that
+// appear in its own resolution tables; flags bit 2 marks progressive 1080
+// (without it 1080 is treated as 1080i). The selected mode is written back
+// with ExSetXConfigSetting(XCONFIG_USER_AV_*_SCREENSZ), which is what Xenia
+// uses as the guest display resolution.
+void VdEnumerateVideoModes_entry(dword_t callback, dword_t context) {
+  if (!callback) {
+    return;
+  }
+  const auto stored =
+      Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
+          XCONFIG_USER_CATEGORY, XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+  const bool stored_interlaced = cvars::interlaced || stored.interlaced_;
+
+  struct Mode {
+    uint16_t width;
+    uint16_t height;
+    bool progressive_1080;
+  };
+  std::vector<Mode> modes;
+  if (cvars::avpack == 6) {  // VGA
+    for (const auto& res : XVGAResolution) {
+      modes.push_back({res.width_.get(), res.height_.get(), true});
+    }
+  } else if (cvars::avpack == 0 || cvars::avpack == 3) {  // SCART/composite
+    modes = {{640, 480, false}};
+  } else {  // HDMI / component
+    modes = {{640, 480, false},
+             {1280, 720, false},
+             {1920, 1080, false},
+             {1920, 1080, true}};
+    if (PatchDashboardResolutionTable()) {
+      modes.push_back({2560, 1440, false});
+      modes.push_back({3840, 2160, false});
+    }
+  }
+
+  auto memory = kernel_state()->memory();
+  const uint32_t guest_mode =
+      memory->SystemHeapAlloc(sizeof(X_VD_ENUM_VIDEO_MODE));
+  auto mode = memory->TranslateVirtual<X_VD_ENUM_VIDEO_MODE*>(guest_mode);
+  const float refresh = float(GetVideoRefreshRate(kernel_state()));
+  for (const auto& m : modes) {
+    std::memset(mode, 0, sizeof(*mode));
+    mode->size = 0x16;
+    mode->width = m.width;
+    mode->height = m.height;
+    mode->refresh_rate = refresh;
+    const bool is_current =
+        m.width == stored.width_.get() && m.height == stored.height_.get() &&
+        (m.height != 1080 || m.progressive_1080 == !stored_interlaced);
+    uint32_t flags = 0x1;
+    if (is_current) {
+      flags |= 0x2;
+    }
+    if (m.progressive_1080 && m.height == 1080) {
+      flags |= 0x4;
+    }
+    if (m.width * 3 != m.height * 4) {
+      flags |= 0x8;
+    }
+    mode->flags = flags;
+    mode->refresh_int = static_cast<uint32_t>(refresh);
+    mode->av_type = 3;
+    mode->unknown_15 = 1;
+
+    uint64_t args[] = {guest_mode, context};
+    uint64_t keep_going = kernel_state()->processor()->Execute(
+        XThread::GetCurrentThread()->thread_state(), callback, args,
+        xe::countof(args));
+    if (!static_cast<uint32_t>(keep_going)) {
+      break;
+    }
+  }
+  memory->SystemHeapFree(guest_mode);
+}
+DECLARE_XBOXKRNL_EXPORT1(VdEnumerateVideoModes, kVideo, kSketchy);
+
+dword_result_t VdGetOption_entry(dword_t option, lpdword_t value) {
+  if (value) {
+    *value = 0;
+  }
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdGetOption, kVideo, kStub);
+
+dword_result_t VdSetOption_entry(dword_t option, dword_t value) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdSetOption, kVideo, kStub);
+
+dword_result_t VdSetStudioRGBMode_entry(dword_t enable) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(VdSetStudioRGBMode, kVideo, kStub);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

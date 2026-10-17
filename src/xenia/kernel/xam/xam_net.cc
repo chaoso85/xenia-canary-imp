@@ -738,21 +738,6 @@ dword_result_t NetDll_XHttpStartup_entry(dword_t caller, dword_t reserved,
 }
 DECLARE_XAM_EXPORT1(NetDll_XHttpStartup, kNetworking, kStub);
 
-dword_result_t NetDll_XHttpOpen_entry(dword_t caller, lpstring_t user_agent,
-                                      dword_t access_type,
-                                      lpstring_t proxy_name,
-                                      lpstring_t proxy_bypass, dword_t flags) {
-  // retrieves xhttp directly from array X_HTTP_OBJECT_PTR_ARRAY[xnc]
-  if ((access_type != 0 && access_type != 1 && access_type != 3) ||
-      proxy_bypass) {
-    XThread::SetLastError(X_ERROR_INVALID_PARAMETER);
-  }
-
-  XThread::SetLastError(X_ERROR_NOT_SUPPORTED);  // Until properly implemented
-  return 0;
-}
-DECLARE_XAM_EXPORT1(NetDll_XHttpOpen, kNetworking, kStub);
-
 dword_result_t NetDll_socket_entry(dword_t caller, dword_t af, dword_t type,
                                    dword_t protocol) {
   XSocket* socket = new XSocket(kernel_state());

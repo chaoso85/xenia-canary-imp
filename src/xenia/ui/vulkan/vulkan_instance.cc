@@ -337,7 +337,7 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
   VkApplicationInfo application_info;
   application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
   application_info.pNext = nullptr;
-  application_info.pApplicationName = "Xenia";
+  application_info.pApplicationName = "Xenia Improved";
   application_info.applicationVersion = 1;
   application_info.pEngineName = nullptr;
   application_info.engineVersion = 0;

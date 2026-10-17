@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2a4a"/>
+      <stop offset="1" stop-color="#0b1426"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ff6a1a"/>
+      <stop offset="1" stop-color="#ffc23d"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="none" stroke="#2f4a7a" stroke-width="8"/>
+  <!-- X: two crossing bars -->
+  <g stroke="url(#fg)" stroke-width="60" stroke-linecap="round" fill="none">
+    <line x1="168" y1="420" x2="344" y2="244"/>
+    <line x1="168" y1="244" x2="344" y2="420"/>
+  </g>
+  <!-- upward chevron (improvement) -->
+  <polyline points="180,168 256,104 332,168" fill="none" stroke="#ffc23d"
+            stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

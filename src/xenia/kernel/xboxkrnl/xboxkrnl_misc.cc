@@ -7,7 +7,10 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+
 #include "xenia/cpu/processor.h"
+#include "xenia/kernel/telemetry_log.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xthread.h"
@@ -174,6 +177,117 @@ dword_result_t MicDeviceRequest_entry(pointer_t<X_MIC_DEVICE> device_ptr) {
   return X_STATUS_PENDING;
 }
 DECLARE_XBOXKRNL_EXPORT1(MicDeviceRequest, kNone, kStub);
+
+// --- ETX (event tracing) producers ------------------------------------------
+// Nothing is buffered or uploaded; registrations and events are written to the
+// telemetry log. Producer block layout follows the 17559 kernel:
+//   +0x00 size, +0x04 flags (high 16 bits), +0x10 event descriptor array
+//   (0x2C bytes each), +0x14 event count, +0x1C provider descriptor.
+// EtxProducerRegister(provider, events, event_count, flags, producer_size,
+// producer)
+dword_result_t EtxProducerRegister_entry(lpvoid_t provider, lpvoid_t events,
+                                         dword_t event_count, dword_t flags,
+                                         dword_t producer_size,
+                                         lpvoid_t producer) {
+  if (!producer) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  if (producer_size >= 4) {
+    std::memset(producer, 0, producer_size);
+  }
+  if (producer_size < 0x40) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  xe::store_and_swap<uint32_t>(producer + 0x00, producer_size);
+  xe::store_and_swap<uint32_t>(producer + 0x04, flags & 0xFFFF0000);
+  xe::store_and_swap<uint32_t>(producer + 0x10, events.guest_address());
+  xe::store_and_swap<uint32_t>(producer + 0x14, event_count);
+  xe::store_and_swap<uint32_t>(producer + 0x1C, provider.guest_address());
+
+  TelemetryLog("EtxProducerRegister",
+               fmt::format("producer={:08X} provider={} events={:08X} "
+                           "count={} flags={:08X}",
+                           producer.guest_address(),
+                           TelemetryFormatGuid(provider.guest_address()),
+                           events.guest_address(), uint32_t(event_count),
+                           uint32_t(flags)));
+  uint32_t shown = std::min<uint32_t>(event_count, 64);
+  for (uint32_t i = 0; i < shown; ++i) {
+    TelemetryLog(
+        "EtxProducerRegister",
+        fmt::format("  event[{}] = {}", i,
+                    TelemetryHexDump(events.guest_address() + i * 0x2C, 0x1C)));
+  }
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerRegister, kNone, kStub);
+
+dword_result_t EtxProducerUnregister_entry(lpvoid_t producer) {
+  if (!producer || xe::load_and_swap<uint32_t>(producer) < 0x40) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  TelemetryLog(
+      "EtxProducerUnregister",
+      fmt::format(
+          "producer={:08X} provider={}", producer.guest_address(),
+          TelemetryFormatGuid(xe::load_and_swap<uint32_t>(producer + 0x1C))));
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerUnregister, kNone, kStub);
+
+namespace {
+void LogEtxEvent(const char* source, uint32_t producer, uint32_t event_index,
+                 uint32_t level, uint32_t data_size, std::string fields) {
+  std::string provider = "?";
+  if (TelemetryGuestReadable(producer, 0x20) &&
+      xe::load_and_swap<uint32_t>(
+          kernel_memory()->TranslateVirtual<uint8_t*>(producer)) >= 0x40) {
+    provider = TelemetryFormatGuid(xe::load_and_swap<uint32_t>(
+        kernel_memory()->TranslateVirtual<uint8_t*>(producer + 0x1C)));
+  }
+  TelemetryLog(source, fmt::format("producer={:08X} provider={} event={} "
+                                   "arg={:08X} size={} fields=[{}]",
+                                   producer, provider, event_index, level,
+                                   data_size, fields));
+}
+}  // namespace
+
+// EtxProducerLog(producer, event_index, arg, data_size, ...): the real kernel
+// forwards the variadic part to EtxProducerLogV.
+dword_result_t EtxProducerLog_entry(const ppc_context_t& ctx) {
+  uint32_t producer = uint32_t(ctx->r[3]);
+  if (!TelemetryGuestReadable(producer, 4) ||
+      xe::load_and_swap<uint32_t>(
+          kernel_memory()->TranslateVirtual<uint8_t*>(producer)) < 0x40) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  std::string fields;
+  for (uint32_t i = 4; i < 12; ++i) {
+    if (i > 4) {
+      fields += ' ';
+    }
+    fields += fmt::format("{:08X}", uint32_t(TelemetryGuestArg(ctx, i)));
+  }
+  LogEtxEvent("EtxProducerLog", producer, uint32_t(ctx->r[4]),
+              uint32_t(ctx->r[5]), uint32_t(ctx->r[6]), fields);
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLog, kNone, kStub);
+
+// EtxProducerLogV(producer, event_index, arg, data_size, va_list)
+dword_result_t EtxProducerLogV_entry(dword_t producer, dword_t event_index,
+                                     dword_t arg, dword_t data_size,
+                                     dword_t va_list_ptr) {
+  if (!TelemetryGuestReadable(producer, 4) ||
+      xe::load_and_swap<uint32_t>(
+          kernel_memory()->TranslateVirtual<uint8_t*>(producer)) < 0x40) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  LogEtxEvent("EtxProducerLogV", producer, event_index, arg, data_size,
+              "va=" + TelemetryHexDump(va_list_ptr, 0x20));
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLogV, kNone, kStub);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

@@ -40,6 +40,9 @@ dword_result_t XUsbcamGetState_entry() {
 }
 DECLARE_XBOXKRNL_EXPORT1(XUsbcamGetState, kNone, kStub);
 
+dword_result_t XUsbcamDestroy_entry() { return X_STATUS_SUCCESS; }
+DECLARE_XBOXKRNL_EXPORT1(XUsbcamDestroy, kNone, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

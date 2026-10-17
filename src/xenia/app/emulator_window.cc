@@ -22,6 +22,7 @@
 
 #include "xenia/app/console_settings_dialog.h"
 #include "xenia/app/content_list_dialog.h"
+#include "xenia/app/guide_menu_dialog.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
@@ -31,12 +32,15 @@
 #include "xenia/base/profiling.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
+#include "xenia/config.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/xam/profile_manager.h"
+#include "xenia/kernel/xam/xam.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xconfig.h"
@@ -57,6 +61,7 @@ DECLARE_bool(debug);
 DECLARE_string(hid);
 
 DECLARE_bool(guide_button);
+DECLARE_path(dashboard_path);
 
 DECLARE_bool(clear_memory_page_state);
 
@@ -167,7 +172,7 @@ using namespace xe::hid;
 using namespace xe::gpu;
 
 constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
-constexpr std::string_view kBaseTitle = "Xenia-canary";
+constexpr std::string_view kBaseTitle = "Xenia Improved";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -906,6 +911,12 @@ bool EmulatorWindow::Initialize() {
     console_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Open console settings", "",
         std::bind(&EmulatorWindow::ToggleConsoleSettingsDialog, this)));
+    console_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Open in-game &guide menu", "Home",
+        std::bind(&EmulatorWindow::OpenGuideMenu, this)));
+    console_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "&Return to dashboard", "",
+                         std::bind(&EmulatorWindow::ReturnToDashboard, this)));
   }
   main_menu->AddChild(std::move(console_menu));
 
@@ -1122,6 +1133,10 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
 
     case ui::VirtualKey::kF9: {
       RunPreviouslyPlayedTitle();
+    } break;
+
+    case ui::VirtualKey::kHome: {
+      OpenGuideMenu();
     } break;
 
     default:
@@ -1710,6 +1725,40 @@ void EmulatorWindow::ToggleConsoleSettingsDialog() {
   }
 }
 
+void EmulatorWindow::OpenGuideMenu() {
+  if (guide_menu_open_ || !emulator_->is_title_open()) {
+    return;
+  }
+  // The dashboard has its own guide; only offer this menu to other titles.
+  if (kernel::IsSystemTitle(emulator_->kernel_state()->title_id())) {
+    return;
+  }
+  if (emulator_->kernel_state()->xam_state()->IsUIActive() ||
+      imgui_drawer_->IsAnyDialogOpen()) {
+    return;
+  }
+  guide_menu_open_ = true;
+  // Dialogs retain themselves and delete themselves when closed.
+  new GuideMenuDialog(imgui_drawer_.get(), *this,
+                      !cvars::dashboard_path.empty(),
+                      [this]() { guide_menu_open_ = false; });
+}
+
+void EmulatorWindow::ReturnToDashboard() {
+  if (cvars::dashboard_path.empty()) {
+    XELOGW("Return to dashboard: dashboard_path is not set");
+    return;
+  }
+  if (!emulator_->is_title_open() ||
+      kernel::IsSystemTitle(emulator_->kernel_state()->title_id())) {
+    return;
+  }
+  config::SaveConfig();
+  kernel::xam::ReturnToDashboard();
+}
+
+void EmulatorWindow::RequestQuit() { window_->RequestClose(); }
+
 void EmulatorWindow::ToggleContentListDialog() {
   if (!content_list_dialog_) {
     content_list_dialog_ = std::unique_ptr<ContentListDialog>(
@@ -1900,6 +1949,12 @@ const std::map<int, EmulatorWindow::ControllerHotKey> controller_hotkey_map = {
          EmulatorWindow::ButtonFunctions::CpuTimeScalarReset,
          "D-PAD Right + Guide = Reset CPU Scalar")},
 
+    // In-game guide menu: Guide on its own.
+    {X_INPUT_GAMEPAD_GUIDE,
+     EmulatorWindow::ControllerHotKey(
+         EmulatorWindow::ButtonFunctions::OpenGuideMenu,
+         "Guide = Open in-game guide menu", true, false)},
+
     // non-pass through hotkeys
     {X_INPUT_GAMEPAD_Y, EmulatorWindow::ControllerHotKey(
                             EmulatorWindow::ButtonFunctions::ToggleFullscreen,
@@ -1938,6 +1993,23 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
   // Hotkey cool-down to prevent toggling too fast
   constexpr std::chrono::milliseconds delay(75);
 
+  // Guide on its own opens the in-game guide menu. Checked before the Back
+  // substitution below so that Back keeps meaning Back in games.
+  if (buttons == X_INPUT_GAMEPAD_GUIDE && cvars::guide_button &&
+      !IsUseNexusForGameBarEnabled()) {
+    // The poll runs every 75 ms; only act when the button was released
+    // since the last poll round.
+    const int64_t now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const int64_t last_ms = last_guide_press_ms_.exchange(now_ms);
+    if (now_ms - last_ms > 300 && emulator_->is_title_open()) {
+      app_context().CallInUIThread([this]() { OpenGuideMenu(); });
+    }
+    return Unknown_hotkey;
+  }
+
   // If the Xbox Gamebar is enabled or the Guide button is disabled then
   // replace the Guide button with the Back button without redeclaring the key
   // mappings
@@ -1973,6 +2045,9 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
 
       // Extra Sleep
       xe::threading::Sleep(delay);
+      break;
+    case ButtonFunctions::OpenGuideMenu:
+      // Handled before the lookup.
       break;
     case ButtonFunctions::RunTitle: {
       if (selected_title_index == -1) {

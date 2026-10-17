@@ -13,6 +13,7 @@
 #include <array>
 #include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <numeric>
 
 #include "xenia/base/byte_order.h"
@@ -387,13 +388,20 @@ struct Resolution {
   std::string name_;
   xe::be<uint16_t> width_;
   xe::be<uint16_t> height_;
+  bool interlaced_ = false;
 
   Resolution(uint16_t width, uint16_t height) : width_(width), height_(height) {
     name_ = fmt::format("{}x{}", width, height);
   };
 
-  Resolution(uint32_t value) : width_(value >> 16), height_(value) {
-    name_ = fmt::format("{}x{}", width_.get(), height_.get());
+  // The dashboard stores interlaced modes (1080i) with a negative height.
+  Resolution(uint32_t value)
+      : width_(value >> 16),
+        height_(static_cast<uint16_t>(
+            std::abs(static_cast<int>(static_cast<int16_t>(value))))),
+        interlaced_(static_cast<int16_t>(value) < 0) {
+    name_ = fmt::format("{}x{}{}", width_.get(), height_.get(),
+                        interlaced_ ? "i" : "");
   };
 
   uint32_t to_host() const {
@@ -410,6 +418,23 @@ struct Resolution {
     return aspect_ratio() != std::make_pair<uint16_t, uint16_t>(4, 3);
   }
 };
+
+// Modes beyond the Xbox 360 output limit that Xenia adds to the dashboard's
+// display settings. Titles still get a 720p display mode; the host renders
+// with draw resolution scaling instead (2560x1440 = 2x, 3840x2160 = 3x).
+inline uint32_t DashboardUpscaleFactor(const Resolution& res) {
+  if (res.width_.get() == 2560 && res.height_.get() == 1440) {
+    return 2;
+  }
+  if (res.width_.get() == 3840 && res.height_.get() == 2160) {
+    return 3;
+  }
+  return 1;
+}
+
+inline Resolution GuestOutputResolution(const Resolution& res) {
+  return DashboardUpscaleFactor(res) > 1 ? Resolution(1280, 720) : res;
+}
 
 // Not sure why HDMI is assigned to composite, but ok.
 // XCONFIG_USER_AV_COMPOSITE_SCREENSZ

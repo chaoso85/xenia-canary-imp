@@ -535,10 +535,10 @@ std::pair<uint32_t, uint32_t> GraphicsSystem::GetResolution() const {
             cvars::custom_internal_display_resolution_y};
   }
 
-  const auto resolution =
+  const auto resolution = kernel::GuestOutputResolution(
       kernel::Resolution(kernel_state()->xconfig()->ReadSetting<uint32_t>(
           kernel::XCONFIG_USER_CATEGORY,
-          kernel::XCONFIG_USER_AV_COMPOSITE_SCREENSZ));
+          kernel::XCONFIG_USER_AV_COMPOSITE_SCREENSZ)));
 
   return {resolution.width_, resolution.height_};
 }

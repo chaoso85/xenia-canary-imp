@@ -69,8 +69,15 @@ dword_result_t ExSetXConfigSetting_entry(word_t category, word_t setting,
       static_cast<X_CONFIG_CATEGORY>(category.value()), setting.value(),
       kernel_memory()->TranslateVirtual<void*>(buffer_ptr));
 
-  XELOGI("ExSetXConfigSetting: category: 0x{:04x}, setting: 0x{:04x}",
-         static_cast<uint16_t>(category), static_cast<uint16_t>(setting));
+  XELOGI(
+      "ExSetXConfigSetting: category: 0x{:04x}, setting: 0x{:04x}, value: {}",
+      static_cast<uint16_t>(category), static_cast<uint16_t>(setting),
+      buffer_size == 4 && buffer_ptr
+          ? fmt::format("{:08X}",
+                        xe::load_and_swap<uint32_t>(
+                            kernel_memory()->TranslateVirtual<const uint8_t*>(
+                                buffer_ptr)))
+          : std::string("-"));
   return X_STATUS_SUCCESS;
 }
 DECLARE_XBOXKRNL_EXPORT1(ExSetXConfigSetting, kModules, kStub);

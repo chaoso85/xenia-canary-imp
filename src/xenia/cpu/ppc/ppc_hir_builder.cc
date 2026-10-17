@@ -173,6 +173,10 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
     }
 
     MaybeBreakOnInstruction(address);
+    if (auto probe = frontend_->guest_trace().ProbeFor(address)) {
+      ContextBarrier();
+      CallExtern(probe);
+    }
 
     InstrData i;
     i.address = address;

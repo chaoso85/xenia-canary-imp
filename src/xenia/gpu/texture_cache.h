@@ -70,6 +70,9 @@ class TextureCache {
 
   // Returns whether the actual scale is not smaller than the requested one.
   static bool GetConfigDrawResolutionScale(uint32_t& x_out, uint32_t& y_out);
+  // Minimum scale requested by the emulator (e.g. a 2K/4K mode chosen in the
+  // dashboard). The configured scale is used when it is larger.
+  static void SetMinimumDrawResolutionScale(uint32_t scale);
 
   // Clamps the resolution scale based on device capabilities.
   // sparse_bind_supported: whether the device supports sparse/tiled resources
