@@ -252,6 +252,10 @@ void VdQueryVideoMode(X_VIDEO_MODE* video_mode, bool is_internal_resolution) {
       static_cast<uint32_t>(GetVideoStandard(kernel_state()));
   video_mode->pixel_rate = 0x8A;
   video_mode->widescreen_flag = is_widescreen ? 0x01 : 0x03;
+  XELOGI("VdQueryVideoMode: {}x{}{} (stored {}, internal query {})",
+         video_mode->display_width.get(), video_mode->display_height.get(),
+         video_mode->is_interlaced ? "i" : "", stored_resolution.name_,
+         is_internal_resolution);
 }
 
 void VdQueryRealVideoMode_entry(pointer_t<X_VIDEO_MODE> video_mode) {
