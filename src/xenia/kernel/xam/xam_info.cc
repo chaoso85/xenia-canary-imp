@@ -535,6 +535,13 @@ static std::filesystem::path GetRunningModuleHostPath() {
   return host_entry ? host_entry->host_path() : std::filesystem::path();
 }
 
+bool ReturnToDashboard() {
+  if (cvars::dashboard_path.empty()) {
+    return false;
+  }
+  RestartHostWithTarget(cvars::dashboard_path, {});
+}
+
 static void ReturnToDashboardIfConfigured() {
   if (cvars::dashboard_path.empty() ||
       kernel::IsSystemTitle(kernel_state()->title_id())) {

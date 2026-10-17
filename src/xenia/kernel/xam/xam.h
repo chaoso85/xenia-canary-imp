@@ -384,6 +384,10 @@ struct X_TASK_ARGS {
 };
 static_assert_size(X_TASK_ARGS, 0x8);
 
+// Restarts Xenia with the configured dashboard (dashboard_path). Does not
+// return on success; returns false when no dashboard is configured.
+bool ReturnToDashboard();
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

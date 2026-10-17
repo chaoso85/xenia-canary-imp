@@ -100,6 +100,11 @@ class EmulatorWindow {
   void ToggleConsoleSettingsDialog();
   void ToggleContentListDialog();
 
+  // In-game guide menu (Guide button / Home key).
+  void OpenGuideMenu();
+  void ReturnToDashboard();
+  void RequestQuit();
+
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 
   void ExtractContent(const std::filesystem::path file = "");
@@ -118,6 +123,7 @@ class EmulatorWindow {
     ToggleLogging,
     IncTitleSelect,
     DecTitleSelect,
+    OpenGuideMenu,
     Unknown
   };
 
@@ -316,6 +322,8 @@ class EmulatorWindow {
 
   bool emulator_initialized_ = false;
   std::atomic<bool> disable_hotkeys_ = false;
+  std::atomic<bool> guide_menu_open_ = false;
+  std::atomic<int64_t> last_guide_press_ms_ = 0;
 
   std::string base_title_;
   bool initializing_shader_storage_ = false;
